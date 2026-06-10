@@ -1,0 +1,6 @@
+dist
+pnpm-lock.yaml
+node_modules
+.git
+CONTEXT.md
+docs/adr
