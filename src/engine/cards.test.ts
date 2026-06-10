@@ -32,7 +32,7 @@ describe('カードデータの機械検証', () => {
       const prev = sorted[i - 1].damage / sorted[i - 1].reading.length;
       const curr = sorted[i].damage / sorted[i].reading.length;
       expect(curr, `${sorted[i].name} は ${sorted[i - 1].name} より効率が高いこと`).toBeGreaterThan(
-        prev,
+        prev
       );
     }
   });
