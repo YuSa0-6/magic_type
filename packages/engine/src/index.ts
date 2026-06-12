@@ -3,13 +3,7 @@
  * UI・サーバーはここ('@magic/engine')経由でのみエンジンを参照する。
  */
 
-export type {
-  PressResult,
-  BattleSnapshot,
-  BattleEvent,
-  CardStat,
-  BattleStats,
-} from './battle.ts';
+export type { PressResult, BattleSnapshot, BattleEvent, CardStat, BattleStats } from './battle.ts';
 export { BattleEngine } from './battle.ts';
 
 export type { Card } from './cards.ts';
