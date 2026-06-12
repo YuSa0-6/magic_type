@@ -18,18 +18,18 @@
 
 ## リポジトリ構成
 
-pnpm workspace によるモノレポです。ADR 0002 のドメイン分離をパッケージ境界に昇格し、ADR 0004 で `@magic/engine` を製品全体の唯一のドメイン層と定めています。
+pnpm workspace によるモノレポです。ADR 0002 のドメイン分離をパッケージ境界に昇格しています。
 
 ```
 magic/
 ├── packages/
-│   └── engine/   # @magic/engine — 製品全体の純TSドメイン層（唯一の正。TypingSession / BattleEngine / CARDS 等）
+│   └── engine/   # @magic/engine — 純TSドメイン層（TypingSession / BattleEngine / CARDS 等）
 └── apps/
     ├── web/      # @magic/web — Svelte SPA（@magic/engine を参照）
-    └── server/   # @magic/server — Hono on Cloudflare Workers（routes/ サブルーター構成。/api/* を処理し dist を静的配信）
+    └── server/   # @magic/server — Hono on Cloudflare Workers（/api/* を処理し dist を静的配信）
 ```
 
-エンジンは TS ソースのまま `@magic/engine` として公開（`exports` → `src/index.ts`）し、Vite / Vitest / wrangler が直接解決します。ビジネスルールはすべて engine に置き、web / server はそれぞれ表示と HTTP の変換に徹します（ADR 0004 の依存ルール）。
+エンジンは TS ソースのまま `@magic/engine` として公開（`exports` → `src/index.ts`）し、Vite / Vitest / wrangler が直接解決します。
 
 ## セットアップ
 
