@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:server": "wrangler dev",
+    "deploy": "vite build && wrangler deploy",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
@@ -15,10 +17,12 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "esbuild"
+      "esbuild",
+      "workerd"
     ]
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260612.1",
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "oxlint": "^0.16.6",
     "prettier": "^3.5.3",
@@ -27,6 +31,10 @@
     "svelte-check": "^4.2.1",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
-    "vitest": "^3.2.3"
+    "vitest": "^3.2.3",
+    "wrangler": "^4.100.0"
+  },
+  "dependencies": {
+    "hono": "^4.12.25"
   }
 }
