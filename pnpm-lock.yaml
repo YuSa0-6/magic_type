@@ -7,17 +7,7 @@ settings:
 importers:
 
   .:
-    dependencies:
-      hono:
-        specifier: ^4.12.25
-        version: 4.12.25
     devDependencies:
-      '@cloudflare/workers-types':
-        specifier: ^4.20260612.1
-        version: 4.20260612.1
-      '@sveltejs/vite-plugin-svelte':
-        specifier: ^5.0.3
-        version: 5.1.1(svelte@5.56.3)(vite@6.4.3)
       oxlint:
         specifier: ^0.16.6
         version: 0.16.12
@@ -27,6 +17,38 @@ importers:
       prettier-plugin-svelte:
         specifier: ^3.4.0
         version: 3.5.2(prettier@3.8.4)(svelte@5.56.3)
+
+  apps/server:
+    dependencies:
+      '@magic/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+      hono:
+        specifier: ^4.12.25
+        version: 4.12.25
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20260612.1
+        version: 4.20260612.1
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.3
+        version: 3.2.6
+      wrangler:
+        specifier: ^4.100.0
+        version: 4.100.0(@cloudflare/workers-types@4.20260612.1)
+
+  apps/web:
+    dependencies:
+      '@magic/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+    devDependencies:
+      '@sveltejs/vite-plugin-svelte':
+        specifier: ^5.0.3
+        version: 5.1.1(svelte@5.56.3)(vite@6.4.3)
       svelte:
         specifier: ^5.34.6
         version: 5.56.3
@@ -39,12 +61,15 @@ importers:
       vite:
         specifier: ^6.3.5
         version: 6.4.3
+
+  packages/engine:
+    devDependencies:
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
       vitest:
         specifier: ^3.2.3
         version: 3.2.6
-      wrangler:
-        specifier: ^4.100.0
-        version: 4.100.0(@cloudflare/workers-types@4.20260612.1)
 
 packages:
 

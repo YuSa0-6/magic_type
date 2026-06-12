@@ -4,7 +4,7 @@
     {
       "name": "dev",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["dev"],
+      "runtimeArgs": ["--filter", "@magic/web", "dev"],
       "port": 5173
     }
   ]
