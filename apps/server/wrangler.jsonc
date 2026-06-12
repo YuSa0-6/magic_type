@@ -4,6 +4,11 @@
   "name": "magic",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-12",
+  "routes": [
+    // 独自ドメイン。デプロイ時に Cloudflare が DNS レコードと TLS 証明書を自動作成・管理する。
+    // 事前にダッシュボードで typespell.app をゾーン追加しておくこと(未追加だとデプロイが失敗する)。
+    { "pattern": "typespell.app", "custom_domain": true },
+  ],
   "assets": {
     // Vite ビルド成果物を静的配信する。
     "directory": "../web/dist/",
