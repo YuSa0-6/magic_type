@@ -1,6 +1,7 @@
 # 0004. サーバー(Hono)を DDD ベースの層構成にする
 
-- ステータス: 承認
+- ステータス: 承認(engine の配置に関する記述は ADR 0005 により上書き —
+  engine は独立パッケージではなく `domain/engine/` に置かれる)
 - 日付: 2026-06-12
 - 関連: ADR 0002(純TSエンジン分離)、ADR 0003(Hono + Cloudflare Workers)
 - 参考: [Hono マイベストプラクティス](https://zenn.dev/yodaka/articles/ad49f29a54ceba)
