@@ -1,10 +1,10 @@
 <script lang="ts">
-  // スタート画面: タイトルと操作説明を表示する。
-  // 開始操作(スペースキー)は App 側の window keydown で処理するため、ここでは表示のみ。
+  // 準備画面: 操作説明と開始キーの案内を表示する。
+  // タイトルはホームにあるため、ここでは重複表示しない。
+  // 開始操作(スペースキー)は Game 側の window keydown で処理するため、ここでは表示のみ。
 </script>
 
 <section class="start">
-  <h1>マジックタイピングバトル</h1>
   <div class="desc">
     <p>1〜4キーまたはクリックでカードを選択。</p>
     <p>表示されたお題をタイピングして呪文を詠唱しよう。</p>
@@ -16,11 +16,6 @@
 <style>
   .start {
     text-align: center;
-  }
-
-  h1 {
-    font-size: 2rem;
-    color: #333;
   }
 
   .desc {

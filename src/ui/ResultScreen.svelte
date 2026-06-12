@@ -46,6 +46,9 @@
   </table>
 
   <p class="prompt">スペースキーでもう一度</p>
+  <nav class="nav">
+    <a class="home-link" href="#/">ホームへ戻る</a>
+  </nav>
 </section>
 
 <style>
@@ -96,5 +99,15 @@
     font-size: 1.2rem;
     font-weight: bold;
     color: #1565c0;
+  }
+
+  .nav {
+    margin-top: 1rem;
+  }
+
+  .home-link {
+    color: #1565c0;
+    text-decoration: underline;
+    font-family: sans-serif;
   }
 </style>
