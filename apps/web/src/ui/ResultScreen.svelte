@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { BattleStats } from '../engine/battle';
-  import { CARDS } from '../engine/cards';
+  import type { BattleStats } from '@magic/engine';
+  import { CARDS } from '@magic/engine';
 
   // リザルト画面: engine.stats() の戻り値をそのまま表に表示する(整形のみ)。
   // 再挑戦操作(スペースキー)は App 側の window keydown で処理する。
