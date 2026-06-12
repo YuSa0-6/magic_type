@@ -133,7 +133,7 @@ export class BattleEngine {
   private readonly eventLog: BattleEvent[] = [];
 
   constructor(deck: readonly Card[], options?: { targetHp?: number; rng?: () => number }) {
-    this.maxHp = options?.targetHp ?? 50;
+    this.maxHp = options?.targetHp ?? 80;
     this.rng = options?.rng ?? Math.random;
     this.hp = this.maxHp;
 
