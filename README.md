@@ -31,6 +31,30 @@ magic/
 
 エンジンは TS ソースのまま `@magic/engine` として公開（`exports` → `src/index.ts`）し、Vite / Vitest / wrangler が直接解決します。
 
+## セットアップ
+
+依存は mise が `.mise.toml` の定義どおりに Node / pnpm を固定インストールします。
+
+### macOS / Linux
+
+```bash
+curl https://mise.run | sh   # mise 未導入の場合
+mise install
+pnpm install
+```
+
+### Windows
+
+mise は Windows をネイティブサポートしています（WSL 不要）。PowerShell で:
+
+```powershell
+winget install jdx.mise   # mise 未導入の場合
+mise install
+pnpm install
+```
+
+> シェルへの mise の有効化（PATH 設定）は [mise 公式ドキュメント](https://mise.jdx.dev/getting-started.html) を参照してください。以降のコマンドは OS 共通です。
+
 ## 開発コマンド
 
 ルートの scripts は pnpm workspace を再帰実行します。
