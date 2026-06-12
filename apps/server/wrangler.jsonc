@@ -1,0 +1,15 @@
+{
+  // Cloudflare Workers の設定。Hono(/api/*)+ Svelte SPA(静的配信)を 1 つの Worker で扱う。
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "magic",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-12",
+  "assets": {
+    // Vite ビルド成果物を静的配信する。
+    "directory": "../web/dist/",
+    // SPA フォールバック: 未知のパスは index.html を返す(ハッシュルーティング対応)。
+    "not_found_handling": "single-page-application",
+    // /api/* は Assets より先に Worker(Hono)へ流す。それ以外は静的配信が優先。
+    "run_worker_first": ["/api/*"],
+  },
+}

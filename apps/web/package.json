@@ -1,0 +1,22 @@
+{
+  "name": "@magic/web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json"
+  },
+  "dependencies": {
+    "@magic/engine": "workspace:*"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "svelte": "^5.34.6",
+    "svelte-check": "^4.2.1",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}
