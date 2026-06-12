@@ -45,15 +45,63 @@ pnpm install
 
 ### Windows
 
-mise は Windows をネイティブサポートしています（WSL 不要）。PowerShell で:
+mise は Windows をネイティブサポートしているため、**WSL は不要**です。PowerShell で以下の手順を実行してください。
+
+#### 1. mise のインストール（未導入の場合）
+
+winget または Scoop のどちらかで導入します。
 
 ```powershell
-winget install jdx.mise   # mise 未導入の場合
+# winget の場合
+winget install jdx.mise
+
+# Scoop の場合(シムが自動で PATH に入るため、こちらだと手順2を省略できます)
+scoop install mise
+```
+
+#### 2. PowerShell への mise の有効化（winget で入れた場合）
+
+PowerShell 起動時に mise が自動で有効になるよう、プロファイルに追記します。
+
+```powershell
+# プロファイルの親フォルダがない場合は先に作成
+New-Item -ItemType Directory -Force (Split-Path $PROFILE) | Out-Null
+
+# プロファイルに mise のアクティベートを追記
+Add-Content $PROFILE '(&mise activate pwsh) | Out-String | Invoke-Expression'
+```
+
+追記後、**PowerShell を開き直して**ください。`mise --version` が表示されれば成功です。
+
+> プロファイルの場所や詳細は PowerShell の `about_Profiles`、mise 側の説明は [mise 公式ドキュメント](https://mise.jdx.dev/installing-mise.html) を参照してください。
+
+#### 3. リポジトリの取得とツールのインストール
+
+```powershell
+git clone https://github.com/YuSa0-6/magic_type.git
+cd magic_type
+
+# .mise.toml に固定された Node / pnpm が自動で入る
 mise install
+
+# 依存パッケージのインストール
 pnpm install
 ```
 
-> シェルへの mise の有効化（PATH 設定）は [mise 公式ドキュメント](https://mise.jdx.dev/getting-started.html) を参照してください。以降のコマンドは OS 共通です。
+#### 4. 動作確認
+
+```powershell
+pnpm dev    # http://localhost:5173 が開ければ環境構築完了
+pnpm test   # テストが全件通ることを確認
+```
+
+#### うまくいかないとき
+
+- `mise` コマンドが見つからない → PowerShell を開き直す。それでもだめなら手順2のプロファイル追記を確認
+- スクリプト実行がブロックされる(実行ポリシーのエラー) → `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` を実行してから PowerShell を開き直す
+- `pnpm` が見つからない → リポジトリのフォルダ内で実行しているか確認(`mise install` は `.mise.toml` のあるフォルダで実行する必要があります)
+
+以降の開発コマンドは OS 共通です。
 
 ## 開発コマンド
 
