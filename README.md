@@ -9,10 +9,11 @@
 | mise                              | ツールバージョン管理（`.mise.toml`）       |
 | pnpm                              | パッケージマネージャ                       |
 | Svelte 5 + TypeScript + Vite      | フロントエンドフレームワーク＋ビルドツール |
+| Hono                              | サーバー（`/api/*` を処理）                |
+| Cloudflare Workers + wrangler     | ホスティング（SPA 静的配信 + Worker）      |
 | Vitest                            | ユニットテスト                             |
 | Oxlint                            | リンター                                   |
 | Prettier + prettier-plugin-svelte | コードフォーマッター                       |
-| GitHub Pages                      | 静的ホスティング（`/magic/`）              |
 
 ## 開発コマンド
 
@@ -20,14 +21,20 @@
 # 依存関係のインストール
 pnpm install
 
-# 開発サーバー起動
+# 開発サーバー起動（UI 開発用 Vite）
 pnpm dev
 
 # ビルド
 pnpm build
 
-# ビルドのプレビュー
+# ビルドのプレビュー（Vite）
 pnpm preview
+
+# ローカルで Worker + 静的配信を確認（要 pnpm build 済みの dist）
+pnpm dev:server
+
+# Cloudflare Workers へデプロイ（build + wrangler deploy、通常は CI から実行）
+pnpm deploy
 
 # テスト実行
 pnpm test
