@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { navigate } from './router.svelte';
+  import { navigate, handleNavClick } from './router.svelte';
 
   // ホーム画面: タイトル・ゲーム説明・メニューを表示する。
   // ここではタイピング用のキー捕捉をしない(英字キー等を奪わない)。
-  // メニューのキーボード操作(Enter / Space)でゲームへ遷移できるようにする。
+  // アンカーは Enter でネイティブに発火(onclick 経由で遷移)するため、ここでは Space のみ拾う。
   function handleMenuKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Enter' || e.key === ' ') {
+    if (e.key === ' ') {
       // Space でのページスクロール等を抑止して遷移に倒す。
       e.preventDefault();
       navigate('game');
@@ -21,7 +21,14 @@
   </div>
 
   <nav class="menu">
-    <a class="menu-item" href="#/game" onkeydown={handleMenuKeydown}> タイムアタック </a>
+    <a
+      class="menu-item"
+      href="/game"
+      onclick={(e) => handleNavClick(e, 'game')}
+      onkeydown={handleMenuKeydown}
+    >
+      タイムアタック
+    </a>
   </nav>
 </section>
 
