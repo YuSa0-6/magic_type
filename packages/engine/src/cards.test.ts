@@ -10,19 +10,11 @@ describe('カードデータの機械検証', () => {
     }
   });
 
-  it('読みの長さがカードの強さ帯に収まる', () => {
+  it('全カードの読みが10〜25かなに収まる(お題規定)', () => {
     for (const card of CARDS) {
       const len = card.reading.length;
-      if (card.damage <= 6) {
-        expect(len, `${card.name}(短)`).toBeGreaterThanOrEqual(10);
-        expect(len, `${card.name}(短)`).toBeLessThanOrEqual(12);
-      } else if (card.damage <= 11) {
-        expect(len, `${card.name}(中)`).toBeGreaterThanOrEqual(15);
-        expect(len, `${card.name}(中)`).toBeLessThanOrEqual(18);
-      } else {
-        expect(len, `${card.name}(長)`).toBeGreaterThanOrEqual(22);
-        expect(len, `${card.name}(長)`).toBeLessThanOrEqual(25);
-      }
+      expect(len, `${card.name}`).toBeGreaterThanOrEqual(10);
+      expect(len, `${card.name}`).toBeLessThanOrEqual(25);
     }
   });
 
@@ -37,8 +29,12 @@ describe('カードデータの機械検証', () => {
     }
   });
 
-  it('固定デッキは10枚で、同じカードは最大2枚', () => {
-    expect(STARTER_DECK.length).toBe(10);
+  it('カードは10種', () => {
+    expect(CARDS.length).toBe(10);
+  });
+
+  it('固定デッキは20枚で、同じカードは最大2枚', () => {
+    expect(STARTER_DECK.length).toBe(20);
     const counts = new Map<string, number>();
     for (const card of STARTER_DECK) {
       counts.set(card.id, (counts.get(card.id) ?? 0) + 1);
