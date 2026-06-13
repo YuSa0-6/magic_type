@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { BattleStats } from '@magic/engine';
   import { CARDS } from '@magic/engine';
+  import { handleNavClick } from './router.svelte';
 
   // リザルト画面: engine.stats() の戻り値をそのまま表に表示する(整形のみ)。
   // 再挑戦操作(スペースキー)は App 側の window keydown で処理する。
@@ -47,7 +48,7 @@
 
   <p class="prompt">スペースキーでもう一度</p>
   <nav class="nav">
-    <a class="home-link" href="#/">ホームへ戻る</a>
+    <a class="home-link" href="/" onclick={(e) => handleNavClick(e, 'home')}>ホームへ戻る</a>
   </nav>
 </section>
 
