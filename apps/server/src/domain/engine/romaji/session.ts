@@ -52,6 +52,30 @@ export class TypingSession {
     this.active = this.fresh(0);
   }
 
+  /**
+   * 進行中詠唱の途中状態を復元する(ADR 0009 #4: serialize/restore の内部用ヘルパ)。
+   * 内部 Candidate 形状を公開境界に出さないため、復元は「受理済み打鍵列(typedKeys)を
+   * 新規セッションへ順に流して NFA 状態を再構成し、誤入力数だけ別途復元する」方式に閉じる。
+   * typedKeys は受理済み打鍵のみ(誤入力は含まない)。MatchEngine.restore からのみ使う想定。
+   * 復元中に typedKeys が読みと整合しない(受理されない)場合は不整合として例外を投げる。
+   */
+  static restoreInProgress(
+    reading: string,
+    typedKeys: readonly string[],
+    mistypes: number
+  ): TypingSession {
+    const session = new TypingSession(reading);
+    for (const key of typedKeys) {
+      const r = session.acceptKey(key);
+      if (r === 'mistyped') {
+        throw new Error(`詠唱復元に失敗しました(受理されない打鍵): ${key}`);
+      }
+    }
+    // 受理列の流し込みで進んだ active/typed/completed はそのまま使い、誤入力数だけ上書き復元する。
+    session.mistypes = mistypes;
+    return session;
+  }
+
   /** 1打鍵を処理する */
   acceptKey(key: string): KeyResult {
     if (this.completed) {

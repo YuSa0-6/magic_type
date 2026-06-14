@@ -28,6 +28,11 @@ export type {
   MatchEvent,
   MatchPlayerConfig,
   MatchOptions,
+  MatchConfig,
+  Command,
+  Resolution,
+  PlayerSideDTO,
+  MatchStateDTO,
 } from './match.ts';
 export { MatchEngine, MATCH_DEFAULT_HP, MATCH_DEFAULT_TIME_LIMIT_MS } from './match.ts';
 

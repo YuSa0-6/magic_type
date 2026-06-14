@@ -55,6 +55,48 @@ export interface ActiveEffectView {
 export type PressResult = 'accepted' | 'mistyped' | 'activated' | 'blocked' | 'buffered';
 
 /**
+ * 1 陣営ぶんの直列化状態(プレーンデータ, ADR 0009 #4 / 0011 #4)。
+ * 内部 Candidate 形状は公開境界に出さない(#4)。進行中詠唱は selectedReading + typedKeys +
+ * mistypes だけを持ち、restore 時にエンジン内部で TypingSession を再構成する。カードは id で
+ * 持ち、restore 時に config の deck から実体へ解決する(DTO を小さく・プレーンに保つ)。
+ */
+export interface PlayerSideDTO {
+  readonly hp: number;
+  readonly shield: number;
+  /** 山札(次に引くのは末尾)。カード id 列。 */
+  readonly drawPile: readonly string[];
+  /** 捨て札。カード id 列。 */
+  readonly discardPile: readonly string[];
+  /** 手札。カード id 列。 */
+  readonly hand: readonly string[];
+  readonly cooldownUntilMs: number;
+  /** 進行中の時限効果(haste/slow)。 */
+  readonly timedCdEffects: readonly {
+    readonly kind: 'haste' | 'slow';
+    readonly ms: number;
+    readonly expiresAtMs: number;
+  }[];
+  readonly selectedIndex: number | null;
+  /**
+   * 進行中詠唱の途中状態(ADR 0009 #4)。詠唱中でなければ null。
+   * selectedReading は再構成する読み、typedKeys は受理済みの打鍵列(誤入力は含めない)、
+   * mistypes は現詠唱の誤入力数(ダメージ減衰に効くので別途保持する)。
+   * restore はこの列を新規 TypingSession へ順に流して内部 NFA 状態を復元し、誤入力数を上書きする。
+   */
+  readonly cast: {
+    readonly selectedReading: string;
+    readonly typedKeys: readonly string[];
+    readonly mistypes: number;
+  } | null;
+  /** 現詠唱の最初の受理打鍵時刻(まだなら null)。castTimeMs の起点。 */
+  readonly castStartedAtMs: number | null;
+  /** クールダウン中に積まれた先行入力バッファ(ADR 0007)。 */
+  readonly typeahead: readonly string[];
+  /** rng ストリームの内部状態(消費位置, ADR 0011 #4)。 */
+  readonly rngState: number;
+}
+
+/**
  * 発動の結果(MatchEngine が相手 HP へ適用するための情報)。
  * applyKey / drainTypeahead の戻り値に同梱され、MatchEngine が回収する。
  */
@@ -491,6 +533,81 @@ export class PlayerSide {
         expiresAtMs: e.expiresAtMs,
       })),
     };
+  }
+
+  /**
+   * 1 陣営ぶんの全状態をプレーンデータへ直列化する(ADR 0011 #4)。
+   * カードは id 列、進行中詠唱は受理済み打鍵列(typedKeys)と誤入力数だけにして、内部
+   * Candidate 形状を公開境界に出さない(ADR 0009 #4)。rng の消費位置(内部状態)は
+   * MatchEngine が StatefulRng から取り出して引数で渡す。
+   */
+  serialize(rngState: number): PlayerSideDTO {
+    return {
+      hp: this.hpValue,
+      shield: this.shieldValue,
+      drawPile: this.drawPile.map((c) => c.id),
+      discardPile: this.discardPile.map((c) => c.id),
+      hand: this.hand.map((c) => c.id),
+      cooldownUntilMs: this.cooldownUntilMs,
+      timedCdEffects: this.timedCdEffects.map((e) => ({
+        kind: e.kind,
+        ms: e.ms,
+        expiresAtMs: e.expiresAtMs,
+      })),
+      selectedIndex: this.selectedIndex,
+      cast:
+        this.session === null
+          ? null
+          : {
+              // 受理済み打鍵列(誤入力は含まない)。restore で新規 TypingSession へ流す。
+              selectedReading: this.hand[this.selectedIndex as number].reading,
+              typedKeys: [...this.session.typedRomaji],
+              mistypes: this.session.mistypeCount,
+            },
+      castStartedAtMs: this.castStartedAtMs,
+      typeahead: this.typeahead.slice(),
+      rngState,
+    };
+  }
+
+  /**
+   * 直列化状態をこの陣営へ上書き復元する(ADR 0011 #4)。
+   * カードは id を config 由来の解決表で実体へ戻し、進行中詠唱は TypingSession.restoreInProgress
+   * で内部 NFA を再構成する(復元はエンジン内部に閉じる, ADR 0009 #4)。defeated は hp から導出。
+   * rng の内部状態は MatchEngine 側が StatefulRng.setState で別途復元する。
+   */
+  restoreFrom(dto: PlayerSideDTO, cardById: ReadonlyMap<string, Card>): void {
+    const resolve = (id: string): Card => {
+      const c = cardById.get(id);
+      if (c === undefined) {
+        throw new Error(`復元できないカード id です: ${id}`);
+      }
+      return c;
+    };
+    this.hpValue = dto.hp;
+    this.shieldValue = dto.shield;
+    this.defeated = dto.hp <= 0;
+    this.drawPile = dto.drawPile.map(resolve);
+    this.discardPile = dto.discardPile.map(resolve);
+    this.hand = dto.hand.map(resolve);
+    this.cooldownUntilMs = dto.cooldownUntilMs;
+    this.timedCdEffects = dto.timedCdEffects.map((e) => ({
+      kind: e.kind,
+      ms: e.ms,
+      expiresAtMs: e.expiresAtMs,
+    }));
+    this.selectedIndex = dto.selectedIndex;
+    this.castStartedAtMs = dto.castStartedAtMs;
+    this.typeahead = dto.typeahead.slice();
+    if (dto.cast === null) {
+      this.session = null;
+    } else {
+      this.session = TypingSession.restoreInProgress(
+        dto.cast.selectedReading,
+        dto.cast.typedKeys,
+        dto.cast.mistypes
+      );
+    }
   }
 
   /**

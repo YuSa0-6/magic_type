@@ -21,10 +21,11 @@
 
 import type { Card } from './cards.ts';
 import { PlayerSide } from './player-side.ts';
-import type { Activation, ActiveEffectView, PressResult } from './player-side.ts';
+import type { Activation, ActiveEffectView, PlayerSideDTO, PressResult } from './player-side.ts';
 
 export type { PressResult } from './player-side.ts';
 export type { ActiveEffectView } from './player-side.ts';
+export type { PlayerSideDTO } from './player-side.ts';
 
 /** 対戦の規定 HP・制限時間(ADR 0010 #10)。 */
 export const MATCH_DEFAULT_HP = 80;
@@ -49,8 +50,11 @@ export type MatchOutcome =
       readonly endReason: EndReason;
     };
 
-/** 内部で保持する権威的な決着結果(視点に依らない絶対結果)。 */
-type Resolution =
+/**
+ * 権威的な決着結果(視点に依らない絶対結果)。MatchEngine が内部保持し、serialize の
+ * MatchStateDTO にもそのまま載せる(プレーンデータ, ADR 0011 #4)。
+ */
+export type Resolution =
   | { readonly kind: 'ongoing' }
   | {
       readonly kind: 'resolved';
@@ -143,17 +147,65 @@ export type MatchEvent =
     };
 
 /**
- * mulberry32: 決定論的な疑似乱数生成器([0, 1) を返す)。
- * テストとマスター seed からの陣営派生に使う(ADR 0009 #2)。
+ * 状態を取り出し・復元できる決定論的な疑似乱数ストリーム(mulberry32, ADR 0009 #2/#4)。
+ *
+ * PlayerSide には `next`(= `() => number`)だけを渡すので per-side の公開境界は変えない。
+ * MatchEngine 側は本オブジェクトを保持して、`getState`/`setState` で内部 32bit 状態を
+ * serialize/restore する(ADR 0011 #4: from-snapshot で rng の消費位置まで完全復元)。
+ * 「seed + 呼び出し回数」ではなく内部状態そのものを持つので、consumer が増えても壊れない。
  */
-function mulberry32(seed: number): () => number {
-  let s = seed;
-  return () => {
-    s |= 0;
-    s = (s + 0x6d2b79f5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+interface StatefulRng {
+  /** [0, 1) を返す。PlayerSide にはこの関数(bind 済み)だけを渡す。 */
+  next(): number;
+  /** 現在の内部状態(32bit 符号付き整数)。serialize 用。 */
+  getState(): number;
+  /** 内部状態を復元する。restore 用。 */
+  setState(state: number): void;
+}
+
+/**
+ * コマンド(受理した入力の完全記録, ADR 0009 #3 / 0011 #4)。判別共用体。
+ *
+ * MatchEngine が受け取る状態変更入力(start / selectCard / pressKey / drainTypeahead)を
+ * 時系列で 1:1 記録する。eventLog(発動・撃破などの絶対イベント=統計用)とは責務を分離し、
+ * 「同一 config + この commands 列 → 同一状態」(決定論)で任意 tick を再構成する土台にする。
+ * 内部 Candidate 形状や HP などの派生状態は持たず、純粋な入力だけを保持する。
+ */
+export type Command =
+  | { readonly type: 'start'; readonly atMs: number }
+  | {
+      readonly type: 'select';
+      readonly playerId: string;
+      readonly handIndex: number;
+      readonly atMs: number;
+    }
+  | {
+      readonly type: 'press';
+      readonly playerId: string;
+      readonly key: string;
+      readonly atMs: number;
+    }
+  | { readonly type: 'drain'; readonly playerId: string; readonly atMs: number };
+
+/**
+ * mulberry32: 決定論的な疑似乱数生成器([0, 1) を返す)。内部状態を取り出し・復元できる
+ * StatefulRng として返す。テストとマスター seed からの陣営派生に使う(ADR 0009 #2/#4)。
+ */
+function mulberry32(seed: number): StatefulRng {
+  let s = seed | 0;
+  return {
+    next() {
+      s = (s + 0x6d2b79f5) | 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    },
+    getState() {
+      return s;
+    },
+    setState(state: number) {
+      s = state | 0;
+    },
   };
 }
 
@@ -163,7 +215,7 @@ function mulberry32(seed: number): () => number {
  * 互いに混ざらない独立ストリームになる。これで from-snapshot + replay と予測が一致し、
  * 相手の引き順も読めない。
  */
-function deriveStream(masterSeed: number, sideIndex: number): () => number {
+function deriveStream(masterSeed: number, sideIndex: number): StatefulRng {
   // 陣営インデックスを大きな奇数で攪拌してから seed に加える(0/1 の差を散らす)。
   return mulberry32((masterSeed ^ Math.imul(sideIndex + 1, 0x9e3779b1)) | 0);
 }
@@ -187,6 +239,27 @@ export interface MatchOptions {
   readonly masterSeed?: number;
 }
 
+/**
+ * 対戦の不変構成(ADR 0011 #4)。replay(fromCommands)/restore は「同一 config + コマンド列
+ * もしくは状態 DTO」から再構成するため、両者の入口を 1 つの型に束ねる。players(各 deck)と
+ * options(masterSeed/maxHp/timeLimitMs)で決定論の初期条件が完全に決まる。
+ */
+export interface MatchConfig {
+  readonly players: readonly [MatchPlayerConfig, MatchPlayerConfig];
+  readonly options?: MatchOptions;
+}
+
+/**
+ * MatchEngine 全状態の直列化(プレーンデータ, ADR 0011 #4)。両陣営の状態に加えて、
+ * 進行軸(開始時刻・決着・保留中 KO)を持つ。serialize → restore で中断なしと同一に続行できる。
+ */
+export interface MatchStateDTO {
+  readonly startedAtMs: number | null;
+  readonly resolution: Resolution;
+  readonly pendingKoAtMs: number | null;
+  readonly sides: readonly [PlayerSideDTO, PlayerSideDTO];
+}
+
 /** 既定マスター seed(省略時)。本番ではサーバーが生成した seed を渡す。 */
 const DEFAULT_MASTER_SEED = 0x1234_5678;
 
@@ -194,6 +267,8 @@ export class MatchEngine {
   private readonly timeLimitMs: number;
   private readonly ids: readonly [string, string];
   private readonly sides: readonly [PlayerSide, PlayerSide];
+  /** 陣営ごとの rng ストリーム(状態を serialize/restore するため参照を保持, ADR 0011 #4)。 */
+  private readonly rngs: readonly [StatefulRng, StatefulRng];
 
   private startedAtMs: number | null = null;
   /** 権威的な決着結果(視点非依存)。一度決着したら不変。 */
@@ -210,6 +285,14 @@ export class MatchEngine {
 
   private readonly eventLog: MatchEvent[] = [];
 
+  /**
+   * 受理した入力を時系列で記録するコマンドログ(ADR 0009 #3 / 0011 #4)。
+   * eventLog(統計・絶対記録)とは責務を分離した「受理打鍵の完全記録」で、同一 config と
+   * この列から fromCommands で状態を完全再構成できる(決定論, ADR 0009 #1)。
+   * selectCard/pressKey/drainTypeahead/start が append する。
+   */
+  private readonly commandLog: Command[] = [];
+
   constructor(players: readonly [MatchPlayerConfig, MatchPlayerConfig], options?: MatchOptions) {
     const maxHp = options?.maxHp ?? MATCH_DEFAULT_HP;
     this.timeLimitMs = options?.timeLimitMs ?? MATCH_DEFAULT_TIME_LIMIT_MS;
@@ -220,14 +303,16 @@ export class MatchEngine {
     }
 
     this.ids = [players[0].id, players[1].id];
+    this.rngs = [deriveStream(masterSeed, 0), deriveStream(masterSeed, 1)];
     this.sides = [
-      new PlayerSide(players[0].deck, maxHp, deriveStream(masterSeed, 0)),
-      new PlayerSide(players[1].deck, maxHp, deriveStream(masterSeed, 1)),
+      new PlayerSide(players[0].deck, maxHp, this.rngs[0].next),
+      new PlayerSide(players[1].deck, maxHp, this.rngs[1].next),
     ];
   }
 
   /** 対戦開始時刻を記録する。既に開始済みなら無視する。 */
   start(atMs: number): void {
+    this.commandLog.push({ type: 'start', atMs });
     if (this.startedAtMs !== null) {
       return;
     }
@@ -251,6 +336,7 @@ export class MatchEngine {
    * クールダウン中・詠唱中でも選択は可能(切り替えは進捗リセット)。
    */
   selectCard(playerId: string, handIndex: number, atMs: number): void {
+    this.commandLog.push({ type: 'select', playerId, handIndex, atMs });
     // 別 atMs の操作が来たら、保留中の KO 判定を先に確定させる(同一 atMs バッチの締め)
     this.flushPendingKo(atMs);
     if (this.isResolved) {
@@ -277,6 +363,7 @@ export class MatchEngine {
    * 相手を 0 にした相打ちが draw として裁定される(#16)。
    */
   pressKey(playerId: string, key: string, atMs: number): PressResult {
+    this.commandLog.push({ type: 'press', playerId, key, atMs });
     // 別 atMs の操作が来たら、保留中の KO 判定を先に確定させる(同一 atMs バッチの締め)
     this.flushPendingKo(atMs);
     if (this.isResolved) {
@@ -300,6 +387,7 @@ export class MatchEngine {
    * 1つでも発動・状態変更があれば true(UI がスナップショットを取り直す判断に使う)。
    */
   drainTypeahead(playerId: string, atMs: number): boolean {
+    this.commandLog.push({ type: 'drain', playerId, atMs });
     this.flushPendingKo(atMs);
     if (this.isResolved) {
       return false;
@@ -548,6 +636,86 @@ export class MatchEngine {
   /** 蓄積されたイベントログ(読み取り専用・視点非依存)。 */
   get events(): readonly MatchEvent[] {
     return this.eventLog;
+  }
+
+  /**
+   * 受理した入力のコマンドログ(読み取り専用・視点非依存, ADR 0009 #3 / 0011 #4)。
+   * eventLog とは別物。この列と同一 config から fromCommands で状態を完全再構成できる。
+   */
+  get commands(): readonly Command[] {
+    return this.commandLog;
+  }
+
+  /**
+   * コマンド列から状態を完全再構成する静的ファクトリ(ADR 0011 #4)。
+   * 同一 config(players(deck) + options(masterSeed/maxHp/timeLimitMs))から新規エンジンを作り、
+   * commands を記録時と同じ順に再適用する。決定論(ADR 0009 #1)により、再構成後の
+   * snapshot(両視点)・outcome・eventLog は元エンジンの最終状態と一致する。
+   * reconnect/和解はこの log replay で成立する(ADR 0011 #4)。
+   */
+  static fromCommands(config: MatchConfig, commands: readonly Command[]): MatchEngine {
+    const engine = new MatchEngine(config.players, config.options);
+    for (const cmd of commands) {
+      switch (cmd.type) {
+        case 'start':
+          engine.start(cmd.atMs);
+          break;
+        case 'select':
+          engine.selectCard(cmd.playerId, cmd.handIndex, cmd.atMs);
+          break;
+        case 'press':
+          engine.pressKey(cmd.playerId, cmd.key, cmd.atMs);
+          break;
+        case 'drain':
+          engine.drainTypeahead(cmd.playerId, cmd.atMs);
+          break;
+      }
+    }
+    return engine;
+  }
+
+  /**
+   * MatchEngine 全状態をプレーンデータへ直列化する(ADR 0011 #4)。
+   * 進行中詠唱は内部 Candidate 形状を出さず selectedReading + typedKeys だけを持つ(ADR 0009 #4)。
+   * rng は内部状態(消費位置)も含めるので、restore 後の draw 順まで完全に一致する。
+   * 参照前に保留中の KO を確定させない(進行中の保留状態もそのまま保存する)。
+   */
+  serialize(): MatchStateDTO {
+    return {
+      startedAtMs: this.startedAtMs,
+      resolution: this.resolution,
+      pendingKoAtMs: this.pendingKoAtMs,
+      sides: [
+        this.sides[0].serialize(this.rngs[0].getState()),
+        this.sides[1].serialize(this.rngs[1].getState()),
+      ],
+    };
+  }
+
+  /**
+   * 直列化状態から MatchEngine を復元する静的ファクトリ(ADR 0011 #4)。
+   * config から初期エンジンを作った後、DTO の全状態(両 side + 進行軸 + rng 消費位置)を
+   * 上書きする。復元後に同じ入力で進めると、中断なしと同一結果になる(決定論)。
+   * 進行中詠唱は DTO の typedKeys を新規 TypingSession へ流して内部 NFA を再構成する
+   * (復元はエンジン内部に閉じる, ADR 0009 #4)。
+   */
+  static restore(config: MatchConfig, dto: MatchStateDTO): MatchEngine {
+    const engine = new MatchEngine(config.players, config.options);
+    engine.startedAtMs = dto.startedAtMs;
+    engine.resolution = dto.resolution;
+    engine.pendingKoAtMs = dto.pendingKoAtMs;
+    // カード id → 実体の解決表(両陣営のデッキから。山札・捨て札・手札の全カードを含む)。
+    const cardById = new Map<string, Card>();
+    for (const p of config.players) {
+      for (const c of p.deck) {
+        cardById.set(c.id, c);
+      }
+    }
+    engine.sides[0].restoreFrom(dto.sides[0], cardById);
+    engine.sides[1].restoreFrom(dto.sides[1], cardById);
+    engine.rngs[0].setState(dto.sides[0].rngState);
+    engine.rngs[1].setState(dto.sides[1].rngState);
+    return engine;
   }
 }
 
