@@ -7,10 +7,11 @@
   interface Props {
     state: BattleState;
     timers: BattleTimers;
+    imeWarning: boolean;
     onSelectCard: (handIndex: number) => void;
   }
 
-  const { state, timers, onSelectCard }: Props = $props();
+  const { state, timers, imeWarning, onSelectCard }: Props = $props();
 
   // HPのテキストバー(████████░░ 形式)を作る。表示専用の整形であり判定ではない。
   const BAR_LENGTH = 10;
@@ -74,6 +75,13 @@
       <div class="no-select">カードを選択してください(1〜4キー / クリック)</div>
     {/if}
   </div>
+
+  <!-- IME(日本語入力)オンの疑いがあるときの注意表示 -->
+  {#if imeWarning}
+    <div class="ime-warning" role="alert">
+      日本語入力(IME)がオンのようです。半角英数で入力してください
+    </div>
+  {/if}
 
   <!-- 詳細情報 -->
   <div class="info">
@@ -182,6 +190,16 @@
 
   .no-select {
     color: #999;
+  }
+
+  .ime-warning {
+    border: 1px solid #f0c36d;
+    background: #fff8e1;
+    color: #8a6d00;
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 1rem;
+    font-size: 0.95rem;
   }
 
   .info {

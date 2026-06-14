@@ -3,6 +3,7 @@
     BattleEngine,
     type BattleTimers,
     type BattleState,
+    type BattleStats,
     STARTER_DECK,
   } from '@magic/server/engine';
   import StartScreen from './StartScreen.svelte';
@@ -26,12 +27,21 @@
   let timers: BattleTimers = $state.raw(engine.snapshotTimers(performance.now()));
   let battleState: BattleState = $state.raw(engine.snapshotState());
 
+  // リザルト表示用の統計。テンプレートから engine.stats() を直接呼ばず(ADR 0002/RX-6)、
+  // バトル→result へ遷移する瞬間に一度だけ確定させる。retry 時は null にリセットする。
+  let finalStats: BattleStats | null = $state.raw(null);
+
+  // IME(日本語入力)がオンのまま打鍵された疑いを示す警告フラグ。
+  // 変換中の keydown を検知したら true、半角英小文字の打鍵が受理されたら false に戻す。
+  let imeWarning = $state(false);
+
   // 入力軸スナップショットを取り直し、終了していればリザルトへ遷移する。
   // timers も操作直後に取り直してよい(クールダウン開始などを即反映するため)。
   function refreshState(now: number): void {
     battleState = engine.snapshotState();
     timers = engine.snapshotTimers(now);
     if (battleState.finished && phase === 'battle') {
+      finalStats = engine.stats();
       phase = 'result';
     }
   }
@@ -50,6 +60,7 @@
       if (changed) {
         battleState = engine.snapshotState();
         if (battleState.finished && phase === 'battle') {
+          finalStats = engine.stats();
           phase = 'result';
         }
       }
@@ -69,6 +80,8 @@
   // リザルトから再挑戦する。エンジンを新規に作り直し、すぐバトルを開始する。
   function retry(): void {
     engine = new BattleEngine(STARTER_DECK);
+    finalStats = null;
+    imeWarning = false;
     const now = performance.now();
     engine.start(now);
     phase = 'battle';
@@ -84,8 +97,20 @@
 
   // window の keydown を一元処理する(ゲーム画面の表示中のみ捕捉される)。
   function handleKeydown(e: KeyboardEvent): void {
+    // IME(日本語入力)変換中の keydown は無視する。変換確定前のキーは
+    // isComposing が立つか、keyCode 229(IME 処理中の合成キーコード)になる。
+    // 単に弾くだけでは無音の取りこぼしになるため、警告フラグを立てて UX で気づかせる。
+    if (e.isComposing || e.keyCode === 229) {
+      imeWarning = true;
+      return;
+    }
     // 修飾キー付きはブラウザ標準動作に委ねる(無視)。
     if (e.ctrlKey || e.metaKey || e.altKey) {
+      return;
+    }
+    // OS/ハードのオートリピート(押しっぱなし)由来の keydown は弾く。
+    // 別個の keydown である連打は通るので、暴発だけを防げる。
+    if (e.repeat) {
       return;
     }
 
@@ -117,7 +142,11 @@
     // 英小文字と '-' のみを打鍵としてエンジンへ渡す。
     if (e.key === '-' || (e.key.length === 1 && e.key >= 'a' && e.key <= 'z')) {
       e.preventDefault();
-      engine.pressKey(e.key, now);
+      const result = engine.pressKey(e.key, now);
+      // 半角英小文字が正常に受理(または発動)されたら IME 警告を解除する。
+      if (result === 'accepted' || result === 'activated') {
+        imeWarning = false;
+      }
       refreshState(now);
     }
   }
@@ -129,7 +158,12 @@
 {#if phase === 'start'}
   <StartScreen />
 {:else if phase === 'battle'}
-  <BattleScreen state={battleState} {timers} onSelectCard={handleSelectCard} />
-{:else}
-  <ResultScreen stats={engine.stats()} clearTimeMs={battleState.clearTimeMs ?? 0} />
+  <BattleScreen
+    state={battleState}
+    {timers}
+    {imeWarning}
+    onSelectCard={handleSelectCard}
+  />
+{:else if finalStats}
+  <ResultScreen stats={finalStats} clearTimeMs={battleState.clearTimeMs ?? 0} />
 {/if}
