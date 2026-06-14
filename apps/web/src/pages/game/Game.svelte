@@ -38,12 +38,21 @@
 
   // 時間 tick。経過時間・クールダウン残りの表示更新に使う(rAF は撤廃)。
   // 表示解像度(0.1秒・HP10段階)に対し 100ms で十分。
+  // 併せて先行入力バッファのドレイン契機も兼ねる(ADR 0007/0008)。
   $effect(() => {
     if (phase !== 'battle') {
       return;
     }
     const id = setInterval(() => {
       const now = performance.now();
+      // クールダウン明けの先行入力をまとめて受理する。入力軸が変われば取り直す。
+      const changed = engine.drainTypeahead(now);
+      if (changed) {
+        battleState = engine.snapshotState();
+        if (battleState.finished && phase === 'battle') {
+          phase = 'result';
+        }
+      }
       timers = engine.snapshotTimers(now);
     }, 100);
     return () => clearInterval(id);

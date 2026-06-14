@@ -223,18 +223,18 @@ describe('カード切り替えで進捗リセット', () => {
 });
 
 describe('クールダウン', () => {
-  it('クールダウン中は pressKey が blocked、明けたら打てる', () => {
+  it('クールダウン中の打鍵は先行入力としてバッファされ即時には進まない(ADR 0007)', () => {
     const engine = makeEngine();
     engine.start(0);
     engine.selectCard(1, 0);
     castFull(engine, 'gale', 1000); // 発動 → 1000+1500=2500 までクールダウン
 
-    // クールダウン中に別カードを選んでも打鍵はブロックされる
+    // クールダウン中に別カードを構えて打鍵すると 'buffered'(捨てられない)
     engine.selectCard(0, 1200); // abyss を構える(選択は可能)
-    expect(engine.pressKey('n', 1200)).toBe('blocked');
-    expect(engine.snapshotState().typedRomaji).toBe(''); // 状態は進まない
+    expect(engine.pressKey('n', 1200)).toBe('buffered');
+    expect(engine.snapshotState().typedRomaji).toBe(''); // この時点では進まない
 
-    // クールダウン明け(2500以降)から打てる
+    // クールダウン明け(2500以降)に直接打鍵すれば受理される
     expect(engine.pressKey('n', 2500)).toBe('accepted');
   });
 
@@ -253,6 +253,101 @@ describe('クールダウン', () => {
     engine.start(0);
     expect(engine.pressKey('k', 0)).toBe('blocked');
     expect(engine.stats().totalMistypes).toBe(0);
+  });
+});
+
+describe('先行入力(type-ahead, ADR 0007)', () => {
+  /** 発動してクールダウンに入った状態を作り、index0(abyss)を構える */
+  function setupCooldownWithReady(): BattleEngine {
+    const engine = makeEngine();
+    engine.start(0);
+    engine.selectCard(1, 0); // gale
+    castFull(engine, 'gale', 1000); // 発動 → 1000+1500=2500 までクールダウン
+    engine.selectCard(0, 1200); // abyss を構える(クールダウン中)
+    return engine;
+  }
+
+  it('クールダウン中の構え済み打鍵は buffered を返し typedRomaji は進まない', () => {
+    const engine = setupCooldownWithReady();
+    // abyss = narakuno... の先頭 'n','a','r' を先行入力
+    expect(engine.pressKey('n', 1200)).toBe('buffered');
+    expect(engine.pressKey('a', 1250)).toBe('buffered');
+    expect(engine.pressKey('r', 1300)).toBe('buffered');
+    expect(engine.snapshotState().typedRomaji).toBe(''); // まだ進まない
+  });
+
+  it('クールダウン明けに drainTypeahead でバッファが受理され typedRomaji が進む', () => {
+    const engine = setupCooldownWithReady();
+    engine.pressKey('n', 1200);
+    engine.pressKey('a', 1250);
+    engine.pressKey('r', 1300);
+
+    // クールダウン中のドレインは何もしない
+    expect(engine.drainTypeahead(2000)).toBe(false);
+    expect(engine.snapshotState().typedRomaji).toBe('');
+
+    // クールダウン明け(2500以降)にドレインすると受理される
+    expect(engine.drainTypeahead(2500)).toBe(true);
+    expect(engine.snapshotState().typedRomaji).toBe('nar');
+  });
+
+  it('先行入力で始めた詠唱の castTimeMs はクールダウン明けから測られ、打鍵時刻に遡らない', () => {
+    // HPを高くして abyss の発動が終了を起こさないようにする
+    const engine = makeEngine(1000);
+    engine.start(0);
+    engine.selectCard(1, 0); // gale
+    castFull(engine, 'gale', 1000); // 発動 → 1000+1500=2500 までクールダウン
+    engine.selectCard(0, 1200); // abyss を構える(クールダウン中)。手札に abyss は残っている
+
+    // クールダウン中(1200〜)に abyss の先頭2打鍵 'na' を先行入力する。
+    // (バッファ上限8のため全文の先行入力は対象外。先頭だけで受理時刻の検証には十分)
+    expect(engine.pressKey('n', 1200)).toBe('buffered');
+    expect(engine.pressKey('a', 1300)).toBe('buffered');
+
+    // クールダウン明け(2500)にドレイン。受理時刻=2500 で castStartedAtMs が確定する。
+    expect(engine.drainTypeahead(2500)).toBe(true);
+    expect(engine.snapshotState().typedRomaji).toBe('na'); // abyss = narakuno...
+
+    // 残りを時刻3000で打ち切る。詠唱時間 = 3000 - 2500 = 500。
+    // もし受理時刻が元の打鍵(1200)に遡っていたら 3000 - 1200 = 1800 になってしまう。
+    const rest = ROMAJI.abyss.slice(2);
+    let last = '';
+    for (const k of rest) {
+      last = engine.pressKey(k, 3000);
+    }
+    expect(last).toBe('activated');
+
+    const abyss = engine.events
+      .filter((e) => e.type === 'activated')
+      .find((e) => e.type === 'activated' && e.cardId === 'abyss' && e.atMs === 3000);
+    expect(abyss).toBeDefined();
+    if (abyss?.type === 'activated') {
+      expect(abyss.castTimeMs).toBe(500); // クールダウン明け(2500)から発動(3000)まで
+    }
+  });
+
+  it('typeahead 上限(8)を超えた打鍵は捨てられる', () => {
+    const engine = setupCooldownWithReady();
+    // abyss = narakunosoko... の先頭から 10 文字を先行入力(上限8)
+    const keys = 'narakunoso'; // 10文字
+    for (const k of keys) {
+      expect(engine.pressKey(k, 1200)).toBe('buffered');
+    }
+    // 明けにドレインすると先頭8文字 'narakuno' のみ受理される
+    expect(engine.drainTypeahead(2500)).toBe(true);
+    expect(engine.snapshotState().typedRomaji).toBe('narakuno');
+  });
+
+  it('別カードへ構え直すと typeahead がクリアされる', () => {
+    const engine = setupCooldownWithReady();
+    engine.pressKey('n', 1200);
+    engine.pressKey('a', 1250);
+    // 別カード(index1: meteor)へ構え直す → バッファは進捗ごとリセット
+    engine.selectCard(1, 1300);
+
+    // ドレインしても受理する先行入力は残っていない
+    expect(engine.drainTypeahead(2500)).toBe(false);
+    expect(engine.snapshotState().typedRomaji).toBe('');
   });
 });
 
