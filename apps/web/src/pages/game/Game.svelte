@@ -56,15 +56,13 @@
     const id = setInterval(() => {
       const now = performance.now();
       // クールダウン明けの先行入力をまとめて受理する。入力軸が変われば取り直す。
+      // 遷移ロジック(finished 判定・finalStats 確定・phase 切替)は refreshState に一本化する。
       const changed = engine.drainTypeahead(now);
       if (changed) {
-        battleState = engine.snapshotState();
-        if (battleState.finished && phase === 'battle') {
-          finalStats = engine.stats();
-          phase = 'result';
-        }
+        refreshState(now);
+      } else {
+        timers = engine.snapshotTimers(now);
       }
-      timers = engine.snapshotTimers(now);
     }, 100);
     return () => clearInterval(id);
   });
@@ -143,8 +141,9 @@
     if (e.key === '-' || (e.key.length === 1 && e.key >= 'a' && e.key <= 'z')) {
       e.preventDefault();
       const result = engine.pressKey(e.key, now);
-      // 半角英小文字が正常に受理(または発動)されたら IME 警告を解除する。
-      if (result === 'accepted' || result === 'activated') {
+      // 半角英小文字が正常に受理(発動・先行入力バッファ含む)されたら IME 警告を解除する。
+      // クールダウン中の正しい先行入力('buffered')でも IME がオフなのは明らかなので解除する。
+      if (result === 'accepted' || result === 'activated' || result === 'buffered') {
         imeWarning = false;
       }
       refreshState(now);

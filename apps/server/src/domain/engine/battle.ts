@@ -130,9 +130,10 @@ const HAND_SIZE = 4;
 
 /**
  * 先行入力バッファの上限(ADR 0007)。
- * クールダウンは短く人間の打鍵数は限られるため、暴走防止の小さい値で足りる。
+ * 暴走防止の上限。現実の先行入力長(どの読みの最大ローマ字長)を十分に上回る値にして、
+ * 正当な入力を無音破棄しないようにする(クールダウン1500ms中の高速タイパーの打鍵数も賄える)。
  */
-const TYPEAHEAD_LIMIT = 8;
+const TYPEAHEAD_LIMIT = 64;
 
 export class BattleEngine {
   private readonly maxHp: number;
@@ -209,8 +210,19 @@ export class BattleEngine {
    * - カード未選択・終了後は 'blocked'(誤入力に数えない)
    * - クールダウン中は構え済み打鍵を先行入力バッファに積み 'buffered'(ADR 0007)
    * - それ以外は選択中カードの TypingSession に委譲し、打ち切ったら発動して 'activated'
+   *
+   * 先頭で drainTypeahead を呼び、保留中の先行入力を順序通りに先へ流してから
+   * 生打鍵を扱う。これをしないと、クールダウン明け直後〜次の tick(最大~100ms)の窓で、
+   * バッファ済み打鍵より後から来た生打鍵が先に適用され、打鍵順が逆転して
+   * 偽の mistyped(ひいてはダメージ減衰)が起きる。
+   * drainTypeahead はクールダウン中/バッファ空/セッション無しでは何もしない(no-op)。
+   * ドレインで発動が起きてセッションが消える/新クールダウンが始まる場合に備え、
+   * ドレイン後に finished/セッション/クールダウンのガードを評価し直す。
    */
   pressKey(key: string, atMs: number): PressResult {
+    // 保留中の先行入力を順序通りに先へ流す(クールダウン中・空・セッション無しなら no-op)
+    this.drainTypeahead(atMs);
+
     if (this.finished || this.selectedIndex === null || this.session === null) {
       return 'blocked';
     }

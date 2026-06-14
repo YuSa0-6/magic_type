@@ -234,8 +234,11 @@ describe('クールダウン', () => {
     expect(engine.pressKey('n', 1200)).toBe('buffered');
     expect(engine.snapshotState().typedRomaji).toBe(''); // この時点では進まない
 
-    // クールダウン明け(2500以降)に直接打鍵すれば受理される
-    expect(engine.pressKey('n', 2500)).toBe('accepted');
+    // クールダウン明け(2500以降)の生打鍵は、まず保留中の先行入力('n')を
+    // 順序通り流してから扱われる(pressKey 先頭の drainTypeahead)。
+    // よって buffered の 'n' で 'n' まで進み、続く正しい打鍵 'a' が受理される。
+    expect(engine.pressKey('a', 2500)).toBe('accepted');
+    expect(engine.snapshotState().typedRomaji).toBe('na'); // abyss = narakuno...
   });
 
   it('クールダウン中でも selectCard は可能', () => {
@@ -300,7 +303,7 @@ describe('先行入力(type-ahead, ADR 0007)', () => {
     engine.selectCard(0, 1200); // abyss を構える(クールダウン中)。手札に abyss は残っている
 
     // クールダウン中(1200〜)に abyss の先頭2打鍵 'na' を先行入力する。
-    // (バッファ上限8のため全文の先行入力は対象外。先頭だけで受理時刻の検証には十分)
+    // (先頭だけで受理時刻の検証には十分)
     expect(engine.pressKey('n', 1200)).toBe('buffered');
     expect(engine.pressKey('a', 1300)).toBe('buffered');
 
@@ -326,16 +329,38 @@ describe('先行入力(type-ahead, ADR 0007)', () => {
     }
   });
 
-  it('typeahead 上限(8)を超えた打鍵は捨てられる', () => {
+  it('現実的な長さの先行入力(上限64以内)は無音破棄されず全て受理される', () => {
     const engine = setupCooldownWithReady();
-    // abyss = narakunosoko... の先頭から 10 文字を先行入力(上限8)
-    const keys = 'narakunoso'; // 10文字
-    for (const k of keys) {
+    // abyss = narakuno... の読み全文(ローマ字)を先行入力しても上限64に収まる
+    const full = ROMAJI.abyss; // 48文字 < 64
+    for (const k of full) {
       expect(engine.pressKey(k, 1200)).toBe('buffered');
     }
-    // 明けにドレインすると先頭8文字 'narakuno' のみ受理される
+    // 明けにドレインすると全文が順序通り受理され、最後の打鍵で発動する。
+    // (発動でセッションが消えるため typedRomaji は空になる)
     expect(engine.drainTypeahead(2500)).toBe(true);
-    expect(engine.snapshotState().typedRomaji).toBe('narakuno');
+    const activated = engine.events.find((e) => e.type === 'activated' && e.cardId === 'abyss');
+    expect(activated).toBeDefined();
+  });
+
+  it('クールダウン明け直後の生打鍵は保留中の先行入力を先に流すので打鍵順が逆転しない', () => {
+    // 修正1の回帰テスト。pressKey 先頭の drainTypeahead が無いと、
+    // クールダウン明け〜次 tick の窓でバッファ済み打鍵より後の生打鍵が先に適用され、
+    // 打鍵順が逆転して偽の mistyped が計上される(以前は mistypeCount===1 になっていた)。
+    const engine = setupCooldownWithReady(); // abyss = narakuno... を構えてクールダウン中
+
+    // クールダウン中(〜2500)に先頭2打鍵 'na' を先行入力(buffered)。drainTypeahead は呼ばない。
+    expect(engine.pressKey('n', 1200)).toBe('buffered');
+    expect(engine.pressKey('a', 1300)).toBe('buffered');
+    expect(engine.snapshotState().typedRomaji).toBe(''); // まだ進まない
+
+    // クールダウン明け(2500)に次の正しい打鍵 'r' を生入力する。
+    // pressKey 先頭で 'na' が順序通り流れた後に 'r' が受理され、'nar' になる。
+    expect(engine.pressKey('r', 2500)).toBe('accepted');
+
+    const snap = engine.snapshotState();
+    expect(snap.typedRomaji).toBe('nar'); // 意図順のプレフィックス
+    expect(snap.castMistypes).toBe(0); // 順序逆転による偽 mistyped が起きない(修正前は 1)
   });
 
   it('別カードへ構え直すと typeahead がクリアされる', () => {
