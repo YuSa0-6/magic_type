@@ -14,7 +14,9 @@ export type {
 export { BattleEngine } from './battle.ts';
 
 export type { Card } from './cards.ts';
-export { CARDS, STARTER_DECK } from './cards.ts';
+export { CARDS, STARTER_DECK, EFFECT_CARDS } from './cards.ts';
+
+export type { Effect } from './effects.ts';
 
 export type { KeyResult } from './romaji/session.ts';
 export { TypingSession } from './romaji/session.ts';
