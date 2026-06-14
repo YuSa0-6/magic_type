@@ -11,13 +11,42 @@
  * 行う(ADR 0010 #14: 同一権威 atMs の全発動を適用しきった後に一括評価)。
  * 自陣 HP は被弾でのみ減るため PlayerSide が保持する。
  *
- * 効果(Effect)の適用は本 PR(A1)では行わない。activeEffects は型上の空配列で、
- * 適用ロジックは後続 A2 で追加する(ADR 0010 #5〜#9)。
+ * 効果(Effect)の適用(A2, ADR 0010 #5〜#9/#13〜#15)は本陣営の状態にのみ作用する:
+ * heal(自陣 HP +)・shield(自陣シールド加算)・haste(自陣の次回 CD 短縮)・
+ * sift(自陣山札の並べ替え)は自陣メソッドで適用し、slow(相手の次回 CD 延長)・
+ * discard(相手手札の入れ替え)は MatchEngine が「相手側の PlayerSide」へ適用する。
+ * haste/slow は進行中 CD には触れず、発動 atMs から durationMs の窓内に新規開始する
+ * CD にのみ ±ms を遅延適用する(ADR 0010 #13)。スタックはリフレッシュ(同種は窓を
+ * 上書き・延長せず、値は最大, ADR 0010 #9)。
  */
 
 import type { Card } from './cards.ts';
 import type { Effect } from './effects.ts';
 import { TypingSession } from './romaji/session.ts';
+
+/**
+ * 持続中の時限効果(haste/slow)の内部表現(ADR 0010 #13)。
+ * HP を毎 tick 増減するループは作らず、新規 CD 開始時に atMs で遅延評価する。
+ * - kind: 'haste'(自陣の次回 CD を短縮)/ 'slow'(自陣の次回 CD を延長)。
+ *   slow は MatchEngine が相手側の PlayerSide に対して付与する(相手デバフ, #15)。
+ * - ms: CD への増減量(haste/slow とも正の数。符号は kind で解釈する)。
+ * - expiresAtMs: 効果の有効窓の終端(この時刻以下に開始する CD にのみ適用)。
+ */
+interface TimedCdEffect {
+  readonly kind: 'haste' | 'slow';
+  ms: number;
+  expiresAtMs: number;
+}
+
+/**
+ * snapshot で公開する持続効果(ADR 0010 #5)。失効は atMs で判定するため、
+ * 残り窓は時間軸(snapshotTimers)側に委ね、ここでは入力軸として種別と値のみ持つ。
+ */
+export interface ActiveEffectView {
+  readonly kind: 'haste' | 'slow';
+  readonly ms: number;
+  readonly expiresAtMs: number;
+}
 
 /**
  * 1打鍵の結果(BattleEngine の PressResult と同義)。
@@ -70,9 +99,17 @@ export class PlayerSide {
   private readonly rng: () => number;
 
   private hpValue: number;
+  /** 自陣シールド残量(被弾の前段で消費する吸収バッファ, ADR 0010 #14)。 */
+  private shieldValue = 0;
   private drawPile: Card[];
   private discardPile: Card[] = [];
   private hand: Card[] = [];
+
+  /**
+   * 持続中の時限効果(haste/slow)。新規 CD 開始時に窓内のものだけ atMs で適用する。
+   * 同種はリフレッシュ(高々1つ, ADR 0010 #9)。
+   */
+  private timedCdEffects: TimedCdEffect[] = [];
 
   private selectedIndex: number | null = null;
   private session: TypingSession | null = null;
@@ -103,23 +140,156 @@ export class PlayerSide {
     return this.hpValue;
   }
 
+  /** 現在のシールド残量(吸収バッファ)。 */
+  get shield(): number {
+    return this.shieldValue;
+  }
+
   get isDefeated(): boolean {
     return this.defeated;
   }
 
   /**
    * 被弾でこの陣営の HP を減らす(MatchEngine が相手の発動ダメージを適用する経路)。
-   * HP は 0 でクランプし、0 以下になったら戦闘不能フラグを立てる。
-   * 勝敗確定そのものは行わない(ADR 0010 #14: 同一 atMs の全発動適用後に一括評価)。
-   *
-   * A1 ではシールド(ADR 0010 #14 ①)は未実装。amount は素通しで HP から控除する。
+   * ダメージ解決パイプライン(ADR 0010 #14): ①シールドから控除 → ②貫通分を HP から
+   * 控除 → ③HP ≤ 0 を記録。シールドは `card.damage` に介入しない HP 前段の吸収バッファで
+   * あり、ダメージ固定(ADR 0001)を侵さない。HP は 0 でクランプし、0 以下になったら
+   * 戦闘不能フラグを立てる。勝敗確定そのものは行わない(同一 atMs の全発動適用後に一括評価)。
    */
   takeDamage(amount: number): void {
-    this.hpValue -= amount;
+    // ①シールドから控除(残量を超える分が貫通)
+    const absorbed = Math.min(this.shieldValue, amount);
+    this.shieldValue -= absorbed;
+    const penetrating = amount - absorbed;
+    // ②貫通分を HP から控除 → ③HP ≤ 0 を記録
+    this.hpValue -= penetrating;
     if (this.hpValue <= 0) {
       this.hpValue = 0;
       this.defeated = true;
     }
+  }
+
+  /**
+   * heal: 自陣 HP を amount 回復し maxHp でクランプする(ADR 0010 #14, 超過分は破棄)。
+   * 自陣バフ(#15)。戦闘不能後の蘇生は想定しないため defeated は変えない。
+   */
+  heal(amount: number): void {
+    this.hpValue = Math.min(this.maxHp, this.hpValue + amount);
+  }
+
+  /**
+   * shield: 自陣シールドを上限付きで加算する(ADR 0010 #9/#14)。
+   * 新シールド = min(現シールド + amount, capAmount)。既に上限以上なら据え置き(減らさない)。
+   * 自陣バフ(#15)。
+   */
+  addShield(amount: number, capAmount: number): void {
+    this.shieldValue = Math.min(Math.max(this.shieldValue, capAmount), this.shieldValue + amount);
+  }
+
+  /**
+   * haste: 自陣の「次回以降に開始する CD」を、発動 atMs から durationMs の窓内で ms 短縮する
+   * (ADR 0010 #13)。進行中 CD は変えない。スタックはリフレッシュ(同種は窓を上書き=
+   * 延長せず、値は最大, ADR 0010 #9)。自陣バフ(#15)。
+   */
+  applyHaste(ms: number, durationMs: number, atMs: number): void {
+    this.refreshTimedCdEffect('haste', ms, atMs + durationMs);
+  }
+
+  /**
+   * slow: 自陣の「次回以降に開始する CD」を窓内で ms 延長する(ADR 0010 #13)。
+   * MatchEngine が相手側の PlayerSide に対して呼ぶ(相手デバフ, #15)。打鍵には干渉しない(#2)。
+   * スタックはリフレッシュ(同種は窓を上書き・値は最大, ADR 0010 #9)。
+   */
+  applySlow(ms: number, durationMs: number, atMs: number): void {
+    this.refreshTimedCdEffect('slow', ms, atMs + durationMs);
+  }
+
+  /**
+   * 同種の時限 CD 効果をリフレッシュする(ADR 0010 #9)。
+   * 同種が既にあれば「窓は上書き(延長しない=新しい expiresAtMs を採る)・値は最大」。
+   * なければ追加する。高々1種につき1つに保つ。
+   */
+  private refreshTimedCdEffect(kind: 'haste' | 'slow', ms: number, expiresAtMs: number): void {
+    const existing = this.timedCdEffects.find((e) => e.kind === kind);
+    if (existing) {
+      existing.ms = Math.max(existing.ms, ms);
+      existing.expiresAtMs = expiresAtMs;
+    } else {
+      this.timedCdEffects.push({ kind, ms, expiresAtMs });
+    }
+  }
+
+  /**
+   * 新規 CD を開始する時刻 atMs で、窓内に有効な haste/slow を合算した CD 増減量を返す。
+   * haste は短縮(−ms)、slow は延長(+ms)。失効(atMs > expiresAtMs)は無視する(遅延評価)。
+   */
+  private cdDeltaAt(atMs: number): number {
+    let delta = 0;
+    for (const e of this.timedCdEffects) {
+      if (atMs <= e.expiresAtMs) {
+        delta += e.kind === 'haste' ? -e.ms : e.ms;
+      }
+    }
+    return delta;
+  }
+
+  /**
+   * sift: 自陣山札の上 count 枚を見て、最大 damage のカードを先頭(次に引く位置)へ移す
+   * (ADR 0010 v1 解釈)。本来仕様(プレイヤーが任意順に並べ替える)はコマンドを要するため
+   * 後回しで、ここでは「上 count 枚のうち最大 damage を次ドローへ」だけを決定論的に行う。
+   * drawPile の末尾が次ドロー位置(drawOne は pop)なので、対象範囲は末尾 count 枚。
+   * 同 damage が複数あるときは元の並びで末尾に近い(より先に引く)方を優先し安定にする。
+   * 山札が空・count≤0 なら no-op。
+   */
+  sift(count: number): void {
+    if (count <= 0 || this.drawPile.length === 0) {
+      return;
+    }
+    const n = Math.min(count, this.drawPile.length);
+    const top = this.drawPile.length - 1; // 次ドロー位置(末尾)
+    // 末尾 n 枚 [top-n+1 .. top] のうち最大 damage の index を探す。
+    // 同値は top に近い方を優先(>= ではなく、末尾から探索して最初に見つかった最大)。
+    let bestIdx = top;
+    let bestDamage = this.drawPile[top].damage;
+    for (let i = top; i > top - n; i--) {
+      if (this.drawPile[i].damage > bestDamage) {
+        bestDamage = this.drawPile[i].damage;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx !== top) {
+      const [picked] = this.drawPile.splice(bestIdx, 1);
+      this.drawPile.push(picked);
+    }
+  }
+
+  /**
+   * discard: この陣営(= 相手側)の手札からランダム1枚を捨て札へ送り、山札から1枚補充する
+   * (ADR 0010 #8/#17)。MatchEngine が「相手側の PlayerSide」へ呼ぶ(相手デバフ, #15)。
+   * - 選択/詠唱中のカード(selectedIndex)は対象外(#17)。
+   * - ランダム選択はこの陣営の rng ストリームで行う(決定論, ADR 0011 #13)。
+   * - 補充できない(山札+捨て札が空)場合は no-op(例外を投げない, #17)。
+   * - 対象になりうる手札が無い(全て詠唱中など)場合も no-op。
+   */
+  discardRandom(): void {
+    // 詠唱中カードを除いた候補 index を集める
+    const candidates: number[] = [];
+    for (let i = 0; i < this.hand.length; i++) {
+      if (i !== this.selectedIndex) {
+        candidates.push(i);
+      }
+    }
+    if (candidates.length === 0) {
+      return;
+    }
+    // 補充不能(山札も捨て札も空)なら no-op(手札を減らさない)
+    if (this.drawPile.length === 0 && this.discardPile.length === 0) {
+      return;
+    }
+    const pick = candidates[Math.floor(this.rng() * candidates.length)];
+    const removed = this.hand[pick];
+    this.discardPile.push(removed);
+    this.hand[pick] = this.drawOne();
   }
 
   /**
@@ -246,7 +416,10 @@ export class PlayerSide {
     this.selectedIndex = null;
     this.session = null;
     this.castStartedAtMs = null;
-    this.cooldownUntilMs = atMs + card.cooldownMs;
+    // 新規 CD は窓内の haste/slow を反映する(進行中 CD には触れない, ADR 0010 #13)。
+    // CD 長は 0 未満にならないようクランプする。
+    const effectiveCdMs = Math.max(0, card.cooldownMs + this.cdDeltaAt(atMs));
+    this.cooldownUntilMs = atMs + effectiveCdMs;
 
     return {
       cardId: card.id,
@@ -282,10 +455,16 @@ export class PlayerSide {
     return Math.max(0, this.cooldownUntilMs - atMs);
   }
 
-  /** 入力軸スナップショット用の素データ(atMs 非依存)。 */
+  /**
+   * 入力軸スナップショット用の素データ(atMs 非依存)。
+   * activeEffects は現在保持している持続効果(haste/slow)を反映する。失効判定は
+   * 参照側が atMs と expiresAtMs を比較して行う(ADR 0010 #4 の遅延評価。残り窓は
+   * snapshotTimers 側で扱う)。
+   */
   snapshot(): {
     hp: number;
     maxHp: number;
+    shield: number;
     hand: readonly Card[];
     selectedIndex: number | null;
     typedRomaji: string;
@@ -293,11 +472,12 @@ export class PlayerSide {
     castMistypes: number;
     drawPileCount: number;
     discardPileCount: number;
-    activeEffects: readonly Effect[];
+    activeEffects: readonly ActiveEffectView[];
   } {
     return {
       hp: this.hpValue,
       maxHp: this.maxHp,
+      shield: this.shieldValue,
       hand: this.hand.slice(),
       selectedIndex: this.selectedIndex,
       typedRomaji: this.session?.typedRomaji ?? '',
@@ -305,8 +485,24 @@ export class PlayerSide {
       castMistypes: this.session?.mistypeCount ?? 0,
       drawPileCount: this.drawPile.length,
       discardPileCount: this.discardPile.length,
-      // 効果適用は A2。A1 では常に空(ADR 0010 #5)。
-      activeEffects: [],
+      activeEffects: this.timedCdEffects.map((e) => ({
+        kind: e.kind,
+        ms: e.ms,
+        expiresAtMs: e.expiresAtMs,
+      })),
     };
+  }
+
+  /**
+   * 上 count 枚の山札カード id を「次に引く順」で返す(テスト・デバッグ用の覗き見)。
+   * drawOne は末尾から引くため、末尾を先頭に並べ替えて返す。
+   */
+  peekTopDrawPile(count: number): readonly string[] {
+    const n = Math.min(count, this.drawPile.length);
+    const out: string[] = [];
+    for (let i = 0; i < n; i++) {
+      out.push(this.drawPile[this.drawPile.length - 1 - i].id);
+    }
+    return out;
   }
 }

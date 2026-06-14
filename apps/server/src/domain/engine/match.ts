@@ -20,11 +20,11 @@
  */
 
 import type { Card } from './cards.ts';
-import type { Effect } from './effects.ts';
 import { PlayerSide } from './player-side.ts';
-import type { Activation, PressResult } from './player-side.ts';
+import type { Activation, ActiveEffectView, PressResult } from './player-side.ts';
 
 export type { PressResult } from './player-side.ts';
+export type { ActiveEffectView } from './player-side.ts';
 
 /** 対戦の規定 HP・制限時間(ADR 0010 #10)。 */
 export const MATCH_DEFAULT_HP = 80;
@@ -66,6 +66,8 @@ type Resolution =
 export interface PlayerState {
   readonly hp: number;
   readonly maxHp: number;
+  /** 現在のシールド残量(被弾の前段で消費する吸収バッファ, ADR 0010 #14)。 */
+  readonly shield: number;
   readonly hand: readonly Card[];
   readonly selectedIndex: number | null;
   readonly typedRomaji: string;
@@ -73,8 +75,11 @@ export interface PlayerState {
   readonly castMistypes: number;
   readonly drawPileCount: number;
   readonly discardPileCount: number;
-  /** 持続中の効果(A1 では常に空, ADR 0010 #5)。適用は A2。 */
-  readonly activeEffects: readonly Effect[];
+  /**
+   * 持続中の時限効果(haste/slow, ADR 0010 #5/#13)。失効は参照側が atMs と
+   * expiresAtMs を比較して判定する(遅延評価)。残り窓は snapshotTimers 側で扱う。
+   */
+  readonly activeEffects: readonly ActiveEffectView[];
 }
 
 /**
@@ -309,11 +314,51 @@ export class MatchEngine {
     return false;
   }
 
-  /** 発動ダメージを相手 HP へ適用し、イベントを記録する(勝敗判定はしない)。 */
+  /**
+   * 発動ダメージを相手 HP へ適用し、続けてカード効果を固定順で適用する(ADR 0010 #14/#15)。
+   * 順序: ①ダメージ(相手 HP)→ ②自陣バフ(heal/shield/haste/sift)→ ③相手デバフ
+   * (slow/discard)。1 カードの effects 配列内も同順で適用する。これで effects[] の評価が
+   * 一意になり「同じ入力列 → 同じ状態」(ADR 0009 #1)を満たす。勝敗確定はしない
+   * (同一 atMs の全発動・全効果を適用しきった後に MatchEngine が一括評価, #14④)。
+   */
   private applyActivation(attackerIdx: 0 | 1, activation: Activation): void {
     const defenderIdx: 0 | 1 = attackerIdx === 0 ? 1 : 0;
-    this.sides[defenderIdx].takeDamage(activation.damage);
-    // 効果(activation.effects)の適用は A2。A1 では回収のみで適用しない。
+    const attacker = this.sides[attackerIdx];
+    const defender = this.sides[defenderIdx];
+
+    // ①ダメージ(相手 HP へ。シールド控除→貫通分は takeDamage 内で解決, #14)
+    defender.takeDamage(activation.damage);
+
+    // ②自陣バフ → ③相手デバフ の固定順で効果を適用する(#15)。
+    // 自陣バフ(heal/shield/haste/sift)を先に、相手デバフ(slow/discard)を後に。
+    const atMs = activation.atMs;
+    for (const effect of activation.effects) {
+      switch (effect.kind) {
+        case 'heal':
+          attacker.heal(effect.amount);
+          break;
+        case 'shield':
+          attacker.addShield(effect.amount, effect.capAmount);
+          break;
+        case 'haste':
+          attacker.applyHaste(effect.ms, effect.durationMs, atMs);
+          break;
+        case 'sift':
+          attacker.sift(effect.count);
+          break;
+      }
+    }
+    for (const effect of activation.effects) {
+      switch (effect.kind) {
+        case 'slow':
+          defender.applySlow(effect.ms, effect.durationMs, atMs);
+          break;
+        case 'discard':
+          defender.discardRandom();
+          break;
+      }
+    }
+
     this.eventLog.push({
       type: 'activated',
       playerId: this.ids[attackerIdx],
@@ -511,6 +556,7 @@ function toPlayerState(s: ReturnType<PlayerSide['snapshot']>): PlayerState {
   return {
     hp: s.hp,
     maxHp: s.maxHp,
+    shield: s.shield,
     hand: s.hand,
     selectedIndex: s.selectedIndex,
     typedRomaji: s.typedRomaji,

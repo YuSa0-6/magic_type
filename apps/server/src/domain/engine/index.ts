@@ -20,6 +20,7 @@ export type { Effect } from './effects.ts';
 
 export type {
   PlayerState,
+  ActiveEffectView,
   MatchSnapshot,
   MatchTimers,
   MatchOutcome,
