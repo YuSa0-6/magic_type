@@ -15,8 +15,25 @@ import { TypingSession } from './romaji/session';
 /** 1打鍵の結果 */
 export type PressResult = 'accepted' | 'mistyped' | 'activated' | 'blocked';
 
-/** UI用の読み取り専用スナップショット */
-export interface BattleSnapshot {
+/**
+ * UI用の時間軸スナップショット(ADR 0008)。
+ * 時刻 atMs に依存する値のみを持つ軽量な読み取り専用ビュー。
+ * 時間 tick(約100ms)で更新される。
+ */
+export interface BattleTimers {
+  /** バトル開始からの経過時間(ミリ秒)。未開始なら0 */
+  readonly elapsedMs: number;
+  /** クールダウンの残り時間(ミリ秒)。クールダウン外は0 */
+  readonly cooldownRemainingMs: number;
+}
+
+/**
+ * UI用の入力軸スナップショット(ADR 0008)。
+ * 入力(打鍵・カード選択)で変わる値のみを持つ読み取り専用ビュー。
+ * atMs に依存せず、入力イベント後にのみ更新される。
+ * finished/clearTimeMs は発動打鍵で確定するイベント値なので入力軸に置く。
+ */
+export interface BattleState {
   /** 的の現在HP */
   readonly targetHp: number;
   /** 的の最大HP */
@@ -31,14 +48,10 @@ export interface BattleSnapshot {
   readonly remainingGuide: string;
   /** 現詠唱の誤入力数 */
   readonly castMistypes: number;
-  /** クールダウンの残り時間(ミリ秒)。クールダウン外は0 */
-  readonly cooldownRemainingMs: number;
   /** 山札の残り枚数 */
   readonly drawPileCount: number;
   /** 捨て札の枚数 */
   readonly discardPileCount: number;
-  /** バトル開始からの経過時間(ミリ秒)。未開始なら0 */
-  readonly elapsedMs: number;
   /** 的を倒して終了したか */
   readonly finished: boolean;
   /** クリアタイム(ミリ秒)。未終了なら null */
@@ -262,9 +275,16 @@ export class BattleEngine {
     return atMs < this.cooldownUntilMs;
   }
 
-  /** UI用の読み取り専用スナップショットを返す */
-  snapshot(atMs: number): BattleSnapshot {
-    const cooldownRemainingMs = Math.max(0, this.cooldownUntilMs - atMs);
+  /** 時間軸スナップショット(時刻依存のみ・軽量)を返す。時間 tick で更新する */
+  snapshotTimers(atMs: number): BattleTimers {
+    return {
+      elapsedMs: this.startedAtMs === null ? 0 : atMs - this.startedAtMs,
+      cooldownRemainingMs: Math.max(0, this.cooldownUntilMs - atMs),
+    };
+  }
+
+  /** 入力軸スナップショット(入力依存・atMs 不要)を返す。入力イベント後に更新する */
+  snapshotState(): BattleState {
     return {
       targetHp: this.hp,
       targetMaxHp: this.maxHp,
@@ -273,10 +293,8 @@ export class BattleEngine {
       typedRomaji: this.session?.typedRomaji ?? '',
       remainingGuide: this.session?.remainingGuide ?? '',
       castMistypes: this.session?.mistypeCount ?? 0,
-      cooldownRemainingMs,
       drawPileCount: this.drawPile.length,
       discardPileCount: this.discardPile.length,
-      elapsedMs: this.startedAtMs === null ? 0 : atMs - this.startedAtMs,
       finished: this.finished,
       clearTimeMs: this.clearTimeMs,
     };

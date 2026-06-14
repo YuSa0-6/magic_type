@@ -60,7 +60,7 @@ function castFull(engine: BattleEngine, cardId: string, atMs: number): string {
 describe('初期状態', () => {
   it('手札4枚・山札16枚・捨て札0・HP80で始まる', () => {
     const engine = makeEngine();
-    const snap = engine.snapshot(0);
+    const snap = engine.snapshotState();
     expect(snap.targetHp).toBe(80);
     expect(snap.targetMaxHp).toBe(80);
     expect(snap.hand).toHaveLength(4);
@@ -73,22 +73,22 @@ describe('初期状態', () => {
 
   it('固定シードで手札が決まる', () => {
     const engine = makeEngine();
-    const ids = engine.snapshot(0).hand.map((c) => c.id);
+    const ids = engine.snapshotState().hand.map((c) => c.id);
     expect(ids).toEqual(['abyss', 'gale', 'blaze', 'ray']);
   });
 
   it('start 前は経過時間0、start で開始時刻を記録する', () => {
     const engine = makeEngine();
-    expect(engine.snapshot(1000).elapsedMs).toBe(0);
+    expect(engine.snapshotTimers(1000).elapsedMs).toBe(0);
     engine.start(1000);
-    expect(engine.snapshot(1500).elapsedMs).toBe(500);
+    expect(engine.snapshotTimers(1500).elapsedMs).toBe(500);
   });
 
   it('start は二重に呼んでも最初の時刻を保つ', () => {
     const engine = makeEngine();
     engine.start(1000);
     engine.start(9999);
-    expect(engine.snapshot(1500).elapsedMs).toBe(500);
+    expect(engine.snapshotTimers(1500).elapsedMs).toBe(500);
   });
 });
 
@@ -97,7 +97,7 @@ describe('カード選択(構え)', () => {
     const engine = makeEngine();
     engine.start(0);
     engine.selectCard(1, 0); // gale
-    const snap = engine.snapshot(0);
+    const snap = engine.snapshotState();
     expect(snap.selectedIndex).toBe(1);
     expect(snap.remainingGuide).toBe(ROMAJI.gale);
     expect(snap.typedRomaji).toBe('');
@@ -119,13 +119,13 @@ describe('詠唱→発動', () => {
     const result = castFull(engine, 'gale', 1000);
     expect(result).toBe('activated');
 
-    const snap = engine.snapshot(1000);
+    const snap = engine.snapshotState();
     expect(snap.targetHp).toBe(75); // 80 - 5
     expect(snap.discardPileCount).toBe(1); // gale が捨て札へ
     expect(snap.drawPileCount).toBe(15); // 1枚補充で16→15
     expect(snap.hand).toHaveLength(4); // 手札は4枚維持
     expect(snap.selectedIndex).toBeNull(); // 選択解除
-    expect(snap.cooldownRemainingMs).toBe(1500); // クールダウン開始
+    expect(engine.snapshotTimers(1000).cooldownRemainingMs).toBe(1500); // クールダウン開始
   });
 
   it('補充されるカードは山札の先頭(meteor)', () => {
@@ -133,7 +133,7 @@ describe('詠唱→発動', () => {
     engine.start(0);
     engine.selectCard(1, 0); // 手札index1 を発動
     castFull(engine, 'gale', 1000);
-    expect(engine.snapshot(1000).hand[1].id).toBe('meteor');
+    expect(engine.snapshotState().hand[1].id).toBe('meteor');
   });
 
   it('詠唱時間は最初の受理打鍵から発動打鍵まで(選択時点ではない)', () => {
@@ -162,9 +162,9 @@ describe('誤入力によるダメージ減衰', () => {
     // 詠唱開始前に誤入力を2回はさむ
     expect(engine.pressKey('x', 100)).toBe('mistyped');
     expect(engine.pressKey('z', 100)).toBe('mistyped');
-    expect(engine.snapshot(100).castMistypes).toBe(2);
+    expect(engine.snapshotState().castMistypes).toBe(2);
     castFull(engine, 'gale', 1000);
-    expect(engine.snapshot(1000).targetHp).toBe(80 - (5 - 2)); // ダメージ3
+    expect(engine.snapshotState().targetHp).toBe(80 - (5 - 2)); // ダメージ3
   });
 
   it('ダメージは誤入力が多くても下限1を下回らない', () => {
@@ -176,7 +176,7 @@ describe('誤入力によるダメージ減衰', () => {
       engine.pressKey('q', 100);
     }
     castFull(engine, 'gale', 1000);
-    expect(engine.snapshot(1000).targetHp).toBe(79); // 80 - 1
+    expect(engine.snapshotState().targetHp).toBe(79); // 80 - 1
   });
 });
 
@@ -188,11 +188,11 @@ describe('カード切り替えで進捗リセット', () => {
     engine.pressKey('k', 10); // kazen... の途中まで
     engine.pressKey('a', 20);
     engine.pressKey('x', 30); // 誤入力1
-    expect(engine.snapshot(30).typedRomaji).toBe('ka');
-    expect(engine.snapshot(30).castMistypes).toBe(1);
+    expect(engine.snapshotState().typedRomaji).toBe('ka');
+    expect(engine.snapshotState().castMistypes).toBe(1);
 
     engine.selectCard(3, 40); // ray へ切り替え
-    const snap = engine.snapshot(40);
+    const snap = engine.snapshotState();
     expect(snap.selectedIndex).toBe(3);
     expect(snap.typedRomaji).toBe(''); // 進捗リセット
     expect(snap.castMistypes).toBe(0); // 誤入力もリセット
@@ -206,7 +206,7 @@ describe('カード切り替えで進捗リセット', () => {
     engine.pressKey('k', 10);
     engine.pressKey('a', 20);
     engine.selectCard(1, 30); // 同じキーをもう一度押した(無視される)
-    const snap = engine.snapshot(30);
+    const snap = engine.snapshotState();
     expect(snap.typedRomaji).toBe('ka');
     expect(snap.selectedIndex).toBe(1);
   });
@@ -217,7 +217,7 @@ describe('カード切り替えで進捗リセット', () => {
     engine.selectCard(1, 0);
     engine.pressKey('x', 10); // 誤入力1(統計に計上)
     engine.selectCard(3, 20); // ray へ切り替え(現詠唱のカウントはリセット)
-    expect(engine.snapshot(20).castMistypes).toBe(0);
+    expect(engine.snapshotState().castMistypes).toBe(0);
     expect(engine.stats().totalMistypes).toBe(1); // 累計には残る
   });
 });
@@ -232,7 +232,7 @@ describe('クールダウン', () => {
     // クールダウン中に別カードを選んでも打鍵はブロックされる
     engine.selectCard(0, 1200); // abyss を構える(選択は可能)
     expect(engine.pressKey('n', 1200)).toBe('blocked');
-    expect(engine.snapshot(1200).typedRomaji).toBe(''); // 状態は進まない
+    expect(engine.snapshotState().typedRomaji).toBe(''); // 状態は進まない
 
     // クールダウン明け(2500以降)から打てる
     expect(engine.pressKey('n', 2500)).toBe('accepted');
@@ -244,8 +244,8 @@ describe('クールダウン', () => {
     engine.selectCard(1, 0);
     castFull(engine, 'gale', 1000);
     engine.selectCard(0, 1200); // クールダウン中
-    expect(engine.snapshot(1200).selectedIndex).toBe(0);
-    expect(engine.snapshot(1200).cooldownRemainingMs).toBe(1300); // 2500 - 1200
+    expect(engine.snapshotState().selectedIndex).toBe(0);
+    expect(engine.snapshotTimers(1200).cooldownRemainingMs).toBe(1300); // 2500 - 1200
   });
 
   it('カード未選択の打鍵は blocked(誤入力に数えない)', () => {
@@ -265,13 +265,13 @@ describe('山札枯渇→捨て札シャッフルでループ', () => {
     // 山札16枚 → 17回発動すると17枚目の補充で捨て札の再シャッフルが起きる
     for (let n = 0; n < 17; n++) {
       // 常に手札index0のカードを発動する
-      const cardId = engine.snapshot(t).hand[0].id;
+      const cardId = engine.snapshotState().hand[0].id;
       engine.selectCard(0, t);
       t += 1;
       castFull(engine, cardId, t);
       t += 2000; // クールダウンを必ず越える
     }
-    const snap = engine.snapshot(t);
+    const snap = engine.snapshotState();
     // 16回目までで山札16枚を引き切り捨て札16枚。17回目の発動は
     // 捨て札へ1枚足して(計17枚)から補充するため、空の山札に捨て札17枚が
     // シャッフルで戻り、そこから1枚引かれる: 山札 = 17 - 1 = 16、捨て札 = 0
@@ -287,7 +287,7 @@ describe('終了', () => {
     engine.start(0);
     engine.selectCard(0, 0); // abyss
     castFull(engine, 'abyss', 3000);
-    const snap = engine.snapshot(3000);
+    const snap = engine.snapshotState();
     expect(snap.targetHp).toBe(0);
     expect(snap.finished).toBe(true);
     expect(snap.clearTimeMs).toBe(3000); // start(0) から発動(3000)まで
@@ -298,7 +298,7 @@ describe('終了', () => {
     engine.start(0);
     engine.selectCard(0, 0);
     castFull(engine, 'abyss', 1000);
-    expect(engine.snapshot(1000).targetHp).toBe(0);
+    expect(engine.snapshotState().targetHp).toBe(0);
   });
 
   it('終了後の操作はすべて blocked / 無視される', () => {
@@ -312,9 +312,9 @@ describe('終了', () => {
     expect(engine.pressKey('k', 2000)).toBe('blocked');
     // 選択も無視される(選択中インデックスは null のまま)
     engine.selectCard(1, 2000);
-    expect(engine.snapshot(2000).selectedIndex).toBeNull();
+    expect(engine.snapshotState().selectedIndex).toBeNull();
     // クリアタイムは固定
-    expect(engine.snapshot(5000).clearTimeMs).toBe(1000);
+    expect(engine.snapshotState().clearTimeMs).toBe(1000);
   });
 });
 
@@ -350,7 +350,7 @@ describe('イベントログと統計', () => {
 
     // 別カードを1枚発動して山札を回す。gale 以外の発動は stats の gale 集計に影響しない。
     function activateFiller(): void {
-      const card = engine.snapshot(clock).hand[0];
+      const card = engine.snapshotState().hand[0];
       engine.selectCard(0, clock);
       clock += 1;
       const r = ROMAJI[card.id];
@@ -363,10 +363,10 @@ describe('イベントログと統計', () => {
     // gale を1回発動する(手札に無ければ別カードを発動して引き寄せる)。
     // 詠唱時間 = castMs となるよう、最初の打鍵と残りの打鍵で時刻を分ける。
     function activateGale(castMs: number): void {
-      while (engine.snapshot(clock).hand.findIndex((c) => c.id === 'gale') === -1) {
+      while (engine.snapshotState().hand.findIndex((c) => c.id === 'gale') === -1) {
         activateFiller();
       }
-      const idx = engine.snapshot(clock).hand.findIndex((c) => c.id === 'gale');
+      const idx = engine.snapshotState().hand.findIndex((c) => c.id === 'gale');
       engine.selectCard(idx, clock);
       const firstMs = clock;
       const lastMs = clock + castMs;

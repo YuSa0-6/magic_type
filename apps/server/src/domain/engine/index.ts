@@ -3,7 +3,14 @@
  * server は相対 import で、web は '@magic/server/engine' 経由でのみ参照する。
  */
 
-export type { PressResult, BattleSnapshot, BattleEvent, CardStat, BattleStats } from './battle.ts';
+export type {
+  PressResult,
+  BattleTimers,
+  BattleState,
+  BattleEvent,
+  CardStat,
+  BattleStats,
+} from './battle.ts';
 export { BattleEngine } from './battle.ts';
 
 export type { Card } from './cards.ts';
