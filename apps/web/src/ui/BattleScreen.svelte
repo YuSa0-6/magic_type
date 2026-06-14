@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { BattleSnapshot } from '@magic/engine';
+  import type { BattleSnapshot } from '@magic/server/engine';
 
   // バトル画面: スナップショットを表示するだけの薄い皮(ADR 0002)。
   // 業務ロジックは持たず、カードクリックは親へ通知するのみ。

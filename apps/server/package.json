@@ -3,6 +3,9 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
+  "exports": {
+    "./engine": "./src/domain/engine/index.ts"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -10,7 +13,6 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "@magic/engine": "workspace:*",
     "hono": "^4.12.25"
   },
   "devDependencies": {

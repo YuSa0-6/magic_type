@@ -1,6 +1,6 @@
 /**
- * @magic/engine のバレル。純TSドメイン層の公開API。
- * UI・サーバーはここ('@magic/engine')経由でのみエンジンを参照する。
+ * 判定エンジンのバレル。サーバーのドメイン層の公開API。
+ * server は相対 import で、web は '@magic/server/engine' 経由でのみ参照する。
  */
 
 export type { PressResult, BattleSnapshot, BattleEvent, CardStat, BattleStats } from './battle.ts';

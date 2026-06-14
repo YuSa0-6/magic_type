@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { BattleEngine, type BattleSnapshot, STARTER_DECK } from '@magic/engine';
+  import { BattleEngine, type BattleSnapshot, STARTER_DECK } from '@magic/server/engine';
   import StartScreen from './StartScreen.svelte';
   import BattleScreen from './BattleScreen.svelte';
   import ResultScreen from './ResultScreen.svelte';

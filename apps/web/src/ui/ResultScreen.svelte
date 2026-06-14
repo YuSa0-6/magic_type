@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { BattleStats } from '@magic/engine';
-  import { CARDS } from '@magic/engine';
+  import type { BattleStats } from '@magic/server/engine';
+  import { CARDS } from '@magic/server/engine';
   import { handleNavClick } from './router.svelte';
 
   // リザルト画面: engine.stats() の戻り値をそのまま表に表示する(整形のみ)。
