@@ -158,12 +158,7 @@
 {#if phase === 'start'}
   <StartScreen />
 {:else if phase === 'battle'}
-  <BattleScreen
-    state={battleState}
-    {timers}
-    {imeWarning}
-    onSelectCard={handleSelectCard}
-  />
+  <BattleScreen state={battleState} {timers} {imeWarning} onSelectCard={handleSelectCard} />
 {:else if finalStats}
   <ResultScreen stats={finalStats} clearTimeMs={battleState.clearTimeMs ?? 0} />
 {/if}
