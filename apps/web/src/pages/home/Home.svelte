@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { navigate, handleNavClick } from './router.svelte';
+  import { navigate, handleNavClick } from '../../lib/router.svelte';
 
   // ホーム画面: タイトル・ゲーム説明・メニューを表示する。
   // ここではタイピング用のキー捕捉をしない(英字キー等を奪わない)。

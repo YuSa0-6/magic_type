@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { BattleStats } from '@magic/server/engine';
   import { CARDS } from '@magic/server/engine';
-  import { handleNavClick } from './router.svelte';
+  import { handleNavClick } from '../../lib/router.svelte';
 
   // リザルト画面: engine.stats() の戻り値をそのまま表に表示する(整形のみ)。
   // 再挑戦操作(スペースキー)は App 側の window keydown で処理する。
