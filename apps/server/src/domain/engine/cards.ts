@@ -20,8 +20,8 @@ export interface Card {
 
 /**
  * 読み10〜25かなの10種(読み長順)。
- * damage/読み長 が読み長順に 0.300→0.640 で狭義単調増加し、
- * 長いお題ほど1かなあたりのダメージ効率が高い(ADR 0001 の非線形リターン)。
+ * damage/打鍵数 が読み長順に 0.158→0.354 で狭義単調増加し、
+ * 長いお題ほど1打鍵あたりのダメージ効率が高い(ADR 0001 の非線形リターン)。
  */
 export const CARDS: readonly Card[] = [
   {
@@ -77,7 +77,7 @@ export const CARDS: readonly Card[] = [
     name: '光矢',
     displayText: '輝ける光の矢よ、敵を撃ち抜け',
     reading: 'かがやけるひかりのやよてきをうちぬけ',
-    damage: 10,
+    damage: 11,
     cooldownMs: 1500,
   },
   {
@@ -101,7 +101,7 @@ export const CARDS: readonly Card[] = [
     name: '常闇',
     displayText: '奈落の底より這い上がる常闇よ、敵を蝕め',
     reading: 'ならくのそこよりはいあがるとこやみよてきをむしばめ',
-    damage: 16,
+    damage: 17,
     cooldownMs: 1500,
   },
 ];
