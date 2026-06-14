@@ -107,10 +107,6 @@ export class TypingSession {
     return this.mistypes;
   }
 
-  get isCompleted(): boolean {
-    return this.completed;
-  }
-
   /**
    * 残りの推奨ローマ字列(動的ローマ字ガイド)。
    * 現在の入力に追従し、最優先の解釈候補のルートで残りを表示する。
@@ -121,18 +117,6 @@ export class TypingSession {
     }
     const best = this.active[0];
     return best.spelling.slice(best.matched) + this.defaultFrom(best.ki + best.consumes);
-  }
-
-  /** 確定済みのかな位置(全候補の最小)。進捗表示用 */
-  get kanaIndex(): number {
-    if (this.completed) {
-      return this.kana.length;
-    }
-    return Math.min(...this.active.map((c) => c.ki));
-  }
-
-  get kanaLength(): number {
-    return this.kana.length;
   }
 
   /** 位置 ki から読みの最後までのデフォルト表記 */
