@@ -4,6 +4,8 @@
  * 読みの長さ=カードの強さで、長いほどダメージの伸びが大きい(非線形リターン)。
  */
 
+import type { Effect } from './effects.ts';
+
 export interface Card {
   /** カード種の識別子 */
   readonly id: string;
@@ -16,6 +18,8 @@ export interface Card {
   readonly damage: number;
   /** 発動後のクールダウン(ミリ秒) */
   readonly cooldownMs: number;
+  /** 発動時に適用するカード効果(ADR 0010)。純攻撃カードは空配列 */
+  readonly effects: readonly Effect[];
 }
 
 /**
@@ -31,6 +35,7 @@ export const CARDS: readonly Card[] = [
     reading: 'あらなみよてきをのめ',
     damage: 3,
     cooldownMs: 1500,
+    effects: [],
   },
   {
     id: 'spark',
@@ -39,6 +44,7 @@ export const CARDS: readonly Card[] = [
     reading: 'あかきひばなよはじけろ',
     damage: 4,
     cooldownMs: 1500,
+    effects: [],
   },
   {
     id: 'gale',
@@ -47,6 +53,7 @@ export const CARDS: readonly Card[] = [
     reading: 'かぜのやいばよかけぬけろ',
     damage: 5,
     cooldownMs: 1500,
+    effects: [],
   },
   {
     id: 'frost',
@@ -55,6 +62,7 @@ export const CARDS: readonly Card[] = [
     reading: 'こおりのおりよてきをとらえろ',
     damage: 6,
     cooldownMs: 1500,
+    effects: [],
   },
   {
     id: 'blaze',
@@ -63,6 +71,7 @@ export const CARDS: readonly Card[] = [
     reading: 'うずまくほのおよてきをつつみこめ',
     damage: 8,
     cooldownMs: 1500,
+    effects: [],
   },
   {
     id: 'thunder',
@@ -71,6 +80,7 @@ export const CARDS: readonly Card[] = [
     reading: 'てんくうのいかずちよてきをつらぬけ',
     damage: 9,
     cooldownMs: 1500,
+    effects: [],
   },
   {
     id: 'ray',
@@ -79,6 +89,7 @@ export const CARDS: readonly Card[] = [
     reading: 'かがやけるひかりのやよてきをうちぬけ',
     damage: 11,
     cooldownMs: 1500,
+    effects: [],
   },
   {
     id: 'chasm',
@@ -87,6 +98,7 @@ export const CARDS: readonly Card[] = [
     reading: 'ゆるぎなきだいちよてきをちていへとしずめ',
     damage: 12,
     cooldownMs: 1500,
+    effects: [],
   },
   {
     id: 'meteor',
@@ -95,6 +107,7 @@ export const CARDS: readonly Card[] = [
     reading: 'てんよりふりそそぐりゅうせいよてきをうちくだけ',
     damage: 14,
     cooldownMs: 1500,
+    effects: [],
   },
   {
     id: 'abyss',
@@ -103,8 +116,71 @@ export const CARDS: readonly Card[] = [
     reading: 'ならくのそこよりはいあがるとこやみよてきをむしばめ',
     damage: 17,
     cooldownMs: 1500,
+    effects: [],
   },
 ];
 
 /** 固定デッキ: 10種 × 各2枚 = 20枚(同種最大2枚の規則を満たす) */
 export const STARTER_DECK: readonly Card[] = CARDS.flatMap((card) => [card, card]);
+
+/**
+ * 効果カード 6 枚(ADR 0010 #8 の v1 効果メニュー)。
+ * 効果の通貨はお題長(詠唱時間)で、damage/打鍵 を純攻撃カードの曲線より下げた
+ * サブ曲線に置く(ADR 0010 #6)。CARDS / STARTER_DECK には混ぜない(非破壊)。
+ */
+export const EFFECT_CARDS: readonly Card[] = [
+  {
+    id: 'mend',
+    name: '癒し',
+    displayText: '癒しの光よ、傷を塞げ',
+    reading: 'いやしのひかりよきずをふさげ',
+    damage: 3,
+    cooldownMs: 1500,
+    effects: [{ kind: 'heal', amount: 6 }],
+  },
+  {
+    id: 'aegis',
+    name: '守護',
+    displayText: '守りの盾よ、我を庇え',
+    reading: 'まもりのたてよわれをかばえ',
+    damage: 2,
+    cooldownMs: 1500,
+    effects: [{ kind: 'shield', amount: 8, capAmount: 16 }],
+  },
+  {
+    id: 'quicken',
+    name: '加速',
+    displayText: '時を速めよ、我に力を',
+    reading: 'ときをはやめよわれにちからを',
+    damage: 3,
+    cooldownMs: 1500,
+    effects: [{ kind: 'haste', ms: 700, durationMs: 6000 }],
+  },
+  {
+    id: 'mire',
+    name: '泥沼',
+    displayText: '纏わりつく泥よ、相手を縛れ',
+    reading: 'まとわりつくどろよあいてをしばれ',
+    damage: 3,
+    cooldownMs: 1500,
+    effects: [{ kind: 'slow', ms: 700, durationMs: 6000 }],
+  },
+  {
+    id: 'pilfer',
+    name: '掠奪',
+    displayText: '忍び寄る影よ、相手の手札を奪え',
+    reading: 'しのびよるかげよあいてのてふだをうばえ',
+    damage: 4,
+    cooldownMs: 1500,
+    effects: [{ kind: 'discard' }],
+  },
+  {
+    id: 'foresee',
+    name: '予見',
+    displayText: '先を読む眼よ、山札を見通せ',
+    reading: 'さきをよむめよやまふだをみとおせ',
+    damage: 3,
+    cooldownMs: 1500,
+    effects: [{ kind: 'sift', count: 3 }],
+  },
+];
