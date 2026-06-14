@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { getRoute } from './router.svelte';
-  import Home from './Home.svelte';
-  import Game from './Game.svelte';
+  import { getRoute } from './lib/router.svelte';
+  import Home from './pages/home/Home.svelte';
+  import Game from './pages/game/Game.svelte';
 
   // ルートで画面を出し分けるだけの構成(ADR 0002: UIは薄い皮)。
   // ハッシュベースのクライアントルーティングの正は router.svelte.ts。

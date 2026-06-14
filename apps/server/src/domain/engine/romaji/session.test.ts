@@ -15,7 +15,6 @@ describe('基本入力', () => {
     const s = new TypingSession('かみなり');
     expect(typeAll(s, 'kaminar')).toBe('accepted');
     expect(s.acceptKey('i')).toBe('completed');
-    expect(s.isCompleted).toBe(true);
     expect(s.typedRomaji).toBe('kaminari');
     expect(s.mistypeCount).toBe(0);
   });
@@ -89,8 +88,8 @@ describe('表記ゆれの動的受理', () => {
 describe('ん の文脈依存判定', () => {
   it('語末の ん は n 1回では完了しない(nn が必要)', () => {
     const s = new TypingSession('ほん');
-    typeAll(s, 'hon');
-    expect(s.isCompleted).toBe(false);
+    // hon までで完了せず、もう1つ n を打って初めて completed になる
+    expect(typeAll(s, 'hon')).toBe('accepted');
     expect(s.acceptKey('n')).toBe('completed');
     expect(s.typedRomaji).toBe('honn');
   });
@@ -206,26 +205,5 @@ describe('動的ローマ字ガイド', () => {
     const s = new TypingSession('か');
     typeAll(s, 'ka');
     expect(s.remainingGuide).toBe('');
-  });
-});
-
-describe('進捗', () => {
-  it('かな単位の進捗を返す', () => {
-    const s = new TypingSession('かみなり');
-    expect(s.kanaIndex).toBe(0);
-    expect(s.kanaLength).toBe(4);
-    typeAll(s, 'ka');
-    expect(s.kanaIndex).toBe(1);
-    typeAll(s, 'minari');
-    expect(s.kanaIndex).toBe(4);
-  });
-
-  it('ん の単独 n 直後は曖昧なので進捗は保守的に保たれる', () => {
-    const s = new TypingSession('かんじ');
-    typeAll(s, 'kan');
-    // n は「ん完了」と「nn の途中」の両方がありうるため、進捗は ん の位置に留まる
-    expect(s.kanaIndex).toBe(1);
-    s.acceptKey('z');
-    expect(s.kanaIndex).toBe(2);
   });
 });

@@ -12,11 +12,31 @@
 import type { Card } from './cards';
 import { TypingSession } from './romaji/session';
 
-/** 1打鍵の結果 */
-export type PressResult = 'accepted' | 'mistyped' | 'activated' | 'blocked';
+/**
+ * 1打鍵の結果。
+ * - 'buffered' はクールダウン中の構え済み打鍵を先行入力バッファに積んだ状態(ADR 0007)。
+ */
+export type PressResult = 'accepted' | 'mistyped' | 'activated' | 'blocked' | 'buffered';
 
-/** UI用の読み取り専用スナップショット */
-export interface BattleSnapshot {
+/**
+ * UI用の時間軸スナップショット(ADR 0008)。
+ * 時刻 atMs に依存する値のみを持つ軽量な読み取り専用ビュー。
+ * 時間 tick(約100ms)で更新される。
+ */
+export interface BattleTimers {
+  /** バトル開始からの経過時間(ミリ秒)。未開始なら0 */
+  readonly elapsedMs: number;
+  /** クールダウンの残り時間(ミリ秒)。クールダウン外は0 */
+  readonly cooldownRemainingMs: number;
+}
+
+/**
+ * UI用の入力軸スナップショット(ADR 0008)。
+ * 入力(打鍵・カード選択)で変わる値のみを持つ読み取り専用ビュー。
+ * atMs に依存せず、入力イベント後にのみ更新される。
+ * finished/clearTimeMs は発動打鍵で確定するイベント値なので入力軸に置く。
+ */
+export interface BattleState {
   /** 的の現在HP */
   readonly targetHp: number;
   /** 的の最大HP */
@@ -31,14 +51,10 @@ export interface BattleSnapshot {
   readonly remainingGuide: string;
   /** 現詠唱の誤入力数 */
   readonly castMistypes: number;
-  /** クールダウンの残り時間(ミリ秒)。クールダウン外は0 */
-  readonly cooldownRemainingMs: number;
   /** 山札の残り枚数 */
   readonly drawPileCount: number;
   /** 捨て札の枚数 */
   readonly discardPileCount: number;
-  /** バトル開始からの経過時間(ミリ秒)。未開始なら0 */
-  readonly elapsedMs: number;
   /** 的を倒して終了したか */
   readonly finished: boolean;
   /** クリアタイム(ミリ秒)。未終了なら null */
@@ -112,6 +128,13 @@ function shuffle<T>(items: readonly T[], rng: () => number): T[] {
 
 const HAND_SIZE = 4;
 
+/**
+ * 先行入力バッファの上限(ADR 0007)。
+ * 暴走防止の上限。現実の先行入力長(どの読みの最大ローマ字長)を十分に上回る値にして、
+ * 正当な入力を無音破棄しないようにする(クールダウン1500ms中の高速タイパーの打鍵数も賄える)。
+ */
+const TYPEAHEAD_LIMIT = 64;
+
 export class BattleEngine {
   private readonly maxHp: number;
   private readonly rng: () => number;
@@ -125,6 +148,9 @@ export class BattleEngine {
   private session: TypingSession | null = null;
   /** 現詠唱で最初の受理打鍵が起きた時刻(まだなら null) */
   private castStartedAtMs: number | null = null;
+
+  /** クールダウン中に構え済みカードへ打った打鍵の先行入力バッファ(ADR 0007) */
+  private typeahead: string[] = [];
 
   private startedAtMs: number | null = null;
   private cooldownUntilMs = 0;
@@ -174,24 +200,84 @@ export class BattleEngine {
     // 選択し直すたびに新しい詠唱セッションを作る(切り替え=進捗リセット)
     this.session = new TypingSession(card.reading);
     this.castStartedAtMs = null;
+    // 別カードへ構え直すと先行入力バッファも進捗ごとリセットする(ADR 0007)
+    this.typeahead = [];
     this.eventLog.push({ type: 'selected', handIndex, cardId: card.id, atMs });
   }
 
   /**
    * 1打鍵を処理する。
-   * - カード未選択・クールダウン中・終了後は 'blocked'(誤入力に数えない)
-   * - 選択中カードの TypingSession に委譲し、打ち切ったら発動して 'activated'
+   * - カード未選択・終了後は 'blocked'(誤入力に数えない)
+   * - クールダウン中は構え済み打鍵を先行入力バッファに積み 'buffered'(ADR 0007)
+   * - それ以外は選択中カードの TypingSession に委譲し、打ち切ったら発動して 'activated'
+   *
+   * 先頭で drainTypeahead を呼び、保留中の先行入力を順序通りに先へ流してから
+   * 生打鍵を扱う。これをしないと、クールダウン明け直後〜次の tick(最大~100ms)の窓で、
+   * バッファ済み打鍵より後から来た生打鍵が先に適用され、打鍵順が逆転して
+   * 偽の mistyped(ひいてはダメージ減衰)が起きる。
+   * drainTypeahead はクールダウン中/バッファ空/セッション無しでは何もしない(no-op)。
+   * ドレインで発動が起きてセッションが消える/新クールダウンが始まる場合に備え、
+   * ドレイン後に finished/セッション/クールダウンのガードを評価し直す。
    */
   pressKey(key: string, atMs: number): PressResult {
+    // 保留中の先行入力を順序通りに先へ流す(クールダウン中・空・セッション無しなら no-op)
+    this.drainTypeahead(atMs);
+
     if (this.finished || this.selectedIndex === null || this.session === null) {
       return 'blocked';
     }
+    // クールダウン中は捨てずに先行入力バッファへ積む(明けに drainTypeahead で受理)
     if (this.isOnCooldown(atMs)) {
-      return 'blocked';
+      if (this.typeahead.length < TYPEAHEAD_LIMIT) {
+        this.typeahead.push(key);
+      }
+      // 上限超過分は捨てるが、構え済みの打鍵という意味では受け付けたので 'buffered'
+      return 'buffered';
     }
 
-    const card = this.hand[this.selectedIndex];
-    const result = this.session.acceptKey(key);
+    return this.applyKey(key, atMs);
+  }
+
+  /**
+   * クールダウン明けに先行入力バッファをまとめて受理する(ADR 0007)。
+   * 受理時刻はクールダウン明けの時刻(cooldownUntilMs)で統一するため、
+   * castStartedAtMs がクールダウン中まで遡らず、詠唱時間(ADR 0001)が壊れない。
+   * 発動でセッションが消えたら以降のバッファは破棄する。
+   * 1つでも適用したら true を返す(UI が入力軸スナップショットを取り直す判断に使う)。
+   */
+  drainTypeahead(atMs: number): boolean {
+    if (this.isOnCooldown(atMs) || this.typeahead.length === 0 || this.session === null) {
+      // ドレインできないときはバッファをそのまま保持する(まだクールダウン中など)
+      if (this.session === null) {
+        this.typeahead = [];
+      }
+      return false;
+    }
+
+    // 受理時刻はクールダウン明けの時刻に統一する(元の打鍵時刻は使わない)
+    const acceptAtMs = this.cooldownUntilMs;
+    const buffered = this.typeahead;
+    this.typeahead = [];
+
+    let applied = false;
+    for (const key of buffered) {
+      // 発動などでセッションが消えたら以降のバッファは破棄
+      if (this.session === null) {
+        break;
+      }
+      this.applyKey(key, acceptAtMs);
+      applied = true;
+    }
+    return applied;
+  }
+
+  /**
+   * ガード(終了・未選択・クールダウン)を通った後の打鍵適用処理。
+   * TypingSession へ委譲し、最初の受理で詠唱計測を開始、打ち切ったら発動する。
+   */
+  private applyKey(key: string, atMs: number): PressResult {
+    const card = this.hand[this.selectedIndex as number];
+    const result = (this.session as TypingSession).acceptKey(key);
 
     if (result === 'mistyped') {
       this.eventLog.push({ type: 'mistyped', cardId: card.id, key, atMs });
@@ -262,9 +348,16 @@ export class BattleEngine {
     return atMs < this.cooldownUntilMs;
   }
 
-  /** UI用の読み取り専用スナップショットを返す */
-  snapshot(atMs: number): BattleSnapshot {
-    const cooldownRemainingMs = Math.max(0, this.cooldownUntilMs - atMs);
+  /** 時間軸スナップショット(時刻依存のみ・軽量)を返す。時間 tick で更新する */
+  snapshotTimers(atMs: number): BattleTimers {
+    return {
+      elapsedMs: this.startedAtMs === null ? 0 : atMs - this.startedAtMs,
+      cooldownRemainingMs: Math.max(0, this.cooldownUntilMs - atMs),
+    };
+  }
+
+  /** 入力軸スナップショット(入力依存・atMs 不要)を返す。入力イベント後に更新する */
+  snapshotState(): BattleState {
     return {
       targetHp: this.hp,
       targetMaxHp: this.maxHp,
@@ -273,10 +366,8 @@ export class BattleEngine {
       typedRomaji: this.session?.typedRomaji ?? '',
       remainingGuide: this.session?.remainingGuide ?? '',
       castMistypes: this.session?.mistypeCount ?? 0,
-      cooldownRemainingMs,
       drawPileCount: this.drawPile.length,
       discardPileCount: this.discardPile.length,
-      elapsedMs: this.startedAtMs === null ? 0 : atMs - this.startedAtMs,
       finished: this.finished,
       clearTimeMs: this.clearTimeMs,
     };

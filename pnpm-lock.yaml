@@ -20,9 +20,6 @@ importers:
 
   apps/server:
     dependencies:
-      '@magic/engine':
-        specifier: workspace:*
-        version: link:../../packages/engine
       hono:
         specifier: ^4.12.25
         version: 4.12.25
@@ -42,9 +39,9 @@ importers:
 
   apps/web:
     dependencies:
-      '@magic/engine':
+      '@magic/server':
         specifier: workspace:*
-        version: link:../../packages/engine
+        version: link:../server
     devDependencies:
       '@sveltejs/vite-plugin-svelte':
         specifier: ^5.0.3
@@ -61,15 +58,6 @@ importers:
       vite:
         specifier: ^6.3.5
         version: 6.4.3
-
-  packages/engine:
-    devDependencies:
-      typescript:
-        specifier: ^5.8.3
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.3
-        version: 3.2.6
 
 packages:
 
