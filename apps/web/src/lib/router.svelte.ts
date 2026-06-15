@@ -2,24 +2,33 @@
  * 依存ゼロの手書きルーティング(History API)。
  *
  * location.pathname を正としてルートを導出し、$state で公開する。
- * `/game` のみゲーム画面、それ以外(`/`・不明なパス)はホームへ倒す。
+ * 既知のパスはそのページへ、それ以外(`/`・不明なパス)はホームへ倒す。
  * Cloudflare Workers の SPA フォールバック(not_found_handling: single-page-application)と
- * Vite dev の SPA フォールバックにより、/game を直接開く・リロードしても 404 にならず
+ * Vite dev の SPA フォールバックにより、各パスを直接開く・リロードしても 404 にならず
  * index.html が返る。
  */
 
 /** アプリのルート種別 */
-export type Route = 'home' | 'game';
+export type Route = 'home' | 'game' | 'match' | 'deck' | 'room';
 
 /** ルートと URL パスの対応。導出(routeFromPath)と遷移(navigate)の両方をこの一覧から引く。 */
 const PATHS: Record<Route, string> = {
   home: '/',
   game: '/game',
+  // 対戦(PvP)関連(ADR 0010/0011)。v1 はオフライン(対ボット)+ デッキ編集 + ルームスタブ。
+  match: '/match',
+  deck: '/deck',
+  room: '/room',
 };
+
+/** パス → ルートの逆引き表(未知のパスはホームに倒すため別管理)。 */
+const ROUTE_BY_PATH: Record<string, Route> = Object.fromEntries(
+  (Object.entries(PATHS) as [Route, string][]).map(([route, path]) => [path, route])
+);
 
 /** location.pathname からルートを導出する。未知のパスはホーム扱い。 */
 function routeFromPath(pathname: string): Route {
-  return pathname === PATHS.game ? 'game' : 'home';
+  return ROUTE_BY_PATH[pathname] ?? 'home';
 }
 
 // 現在のルート。表示の正はこの $state。popstate の購読で戻る/進むに追従する。

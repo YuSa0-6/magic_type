@@ -17,7 +17,7 @@
   <h1>マジックタイピングバトル</h1>
   <div class="desc">
     <p>カードを選んでお題をタイピングし、呪文を詠唱して的を倒す。</p>
-    <p>的のHP50を0にするまでの時間を競うタイムアタックです。</p>
+    <p>1人で挑むタイムアタックと、相手とHPを削り合う対戦が遊べます。</p>
   </div>
 
   <nav class="menu">
@@ -28,6 +28,15 @@
       onkeydown={handleMenuKeydown}
     >
       タイムアタック
+    </a>
+    <a class="menu-item" href="/match" onclick={(e) => handleNavClick(e, 'match')}>
+      対戦(vsボット)
+    </a>
+    <a class="menu-item" href="/room" onclick={(e) => handleNavClick(e, 'room')}>
+      オンライン対戦
+    </a>
+    <a class="menu-item secondary" href="/deck" onclick={(e) => handleNavClick(e, 'deck')}>
+      デッキ編集
     </a>
   </nav>
 </section>
@@ -77,5 +86,20 @@
     background: #1565c0;
     color: #fff;
     outline: none;
+  }
+
+  /* デッキ編集はゲームモードではない補助導線なので控えめにする。 */
+  .menu-item.secondary {
+    border-color: #888;
+    background: #f0f0f0;
+    color: #555;
+    font-size: 1rem;
+    padding: 0.5rem 2rem;
+  }
+
+  .menu-item.secondary:hover,
+  .menu-item.secondary:focus-visible {
+    background: #888;
+    color: #fff;
   }
 </style>
