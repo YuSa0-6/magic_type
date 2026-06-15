@@ -18,5 +18,23 @@ export { CARDS, STARTER_DECK, EFFECT_CARDS } from './cards.ts';
 
 export type { Effect } from './effects.ts';
 
+export type {
+  PlayerState,
+  ActiveEffectView,
+  MatchSnapshot,
+  MatchTimers,
+  MatchOutcome,
+  EndReason,
+  MatchEvent,
+  MatchPlayerConfig,
+  MatchOptions,
+  MatchConfig,
+  Command,
+  Resolution,
+  PlayerSideDTO,
+  MatchStateDTO,
+} from './match.ts';
+export { MatchEngine, MATCH_DEFAULT_HP, MATCH_DEFAULT_TIME_LIMIT_MS } from './match.ts';
+
 export type { KeyResult } from './romaji/session.ts';
 export { TypingSession } from './romaji/session.ts';
