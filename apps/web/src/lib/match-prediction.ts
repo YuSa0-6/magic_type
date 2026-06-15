@@ -28,7 +28,13 @@
  * drain を打つ。予測は最新ローカル時刻で先行し、サーバーの遅延権威 push で HP 等を補正する。
  */
 
-import { MatchEngine, STARTER_DECK, type Card, type PlayerState } from '@magic/server/engine';
+import {
+  MatchEngine,
+  STARTER_DECK,
+  type Card,
+  type PlayerState,
+  type PressResult,
+} from '@magic/server/engine';
 
 /** 予測が返す自陣の打鍵フィードバック(入力軸のうち視覚に関わる部分のみ)。 */
 export interface SelfTypingPrediction {
@@ -88,14 +94,21 @@ export class SelfPredictor {
     this.engine.selectCard(this.selfId, handIndex, atMs);
   }
 
-  /** 自陣の 1 打鍵を予測へ反映する。受理可否は表示の即応に使う(権威は別途 push)。 */
-  press(key: string, atMs: number): void {
-    this.engine.pressKey(this.selfId, key, atMs);
+  /**
+   * 自陣の 1 打鍵を予測へ反映し、その PressResult を返す(権威は別途 push)。
+   * 戻り値は自陣のローカル入力イベントに音を付けるのに使う(ADR 0012: 発動/ミスの区別)。
+   */
+  press(key: string, atMs: number): PressResult {
+    return this.engine.pressKey(this.selfId, key, atMs);
   }
 
-  /** クールダウン明け先行入力のドレイン(時間 tick 契機, ADR 0007)。 */
-  drain(atMs: number): void {
-    this.engine.drainTypeahead(this.selfId, atMs);
+  /**
+   * クールダウン明け先行入力のドレイン(時間 tick 契機, ADR 0007)。
+   * 受理した各打鍵の結果列を返す(ADR 0012: クールダウン明けに実際に受理されたぶんだけ
+   * 音を鳴らすのに使う。何もドレインしなければ空配列)。
+   */
+  drain(atMs: number): PressResult[] {
+    return this.engine.drainTypeahead(this.selfId, atMs);
   }
 
   /** 現在の自陣打鍵フィードバックを返す(視覚のみ。HP/効果/CD は読まない)。 */

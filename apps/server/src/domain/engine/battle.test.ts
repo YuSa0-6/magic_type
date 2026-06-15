@@ -292,12 +292,12 @@ describe('先行入力(type-ahead, ADR 0007)', () => {
     engine.pressKey('a', 1250);
     engine.pressKey('r', 1300);
 
-    // クールダウン中のドレインは何もしない
-    expect(engine.drainTypeahead(2000)).toBe(false);
+    // クールダウン中のドレインは何もしない(空配列)
+    expect(engine.drainTypeahead(2000)).toEqual([]);
     expect(engine.snapshotState().typedRomaji).toBe('');
 
-    // クールダウン明け(2500以降)にドレインすると受理される
-    expect(engine.drainTypeahead(2500)).toBe(true);
+    // クールダウン明け(2500以降)にドレインすると 'nar' の3打鍵が受理される
+    expect(engine.drainTypeahead(2500)).toEqual(['accepted', 'accepted', 'accepted']);
     expect(engine.snapshotState().typedRomaji).toBe('nar');
   });
 
@@ -315,7 +315,7 @@ describe('先行入力(type-ahead, ADR 0007)', () => {
     expect(engine.pressKey('a', 1300)).toBe('buffered');
 
     // クールダウン明け(2500)にドレイン。受理時刻=2500 で castStartedAtMs が確定する。
-    expect(engine.drainTypeahead(2500)).toBe(true);
+    expect(engine.drainTypeahead(2500)).toEqual(['accepted', 'accepted']);
     expect(engine.snapshotState().typedRomaji).toBe('na'); // abyss = narakuno...
 
     // 残りを時刻3000で打ち切る。詠唱時間 = 3000 - 2500 = 500。
@@ -345,7 +345,9 @@ describe('先行入力(type-ahead, ADR 0007)', () => {
     }
     // 明けにドレインすると全文が順序通り受理され、最後の打鍵で発動する。
     // (発動でセッションが消えるため typedRomaji は空になる)
-    expect(engine.drainTypeahead(2500)).toBe(true);
+    const drained = engine.drainTypeahead(2500);
+    expect(drained.length).toBe(full.length);
+    expect(drained[drained.length - 1]).toBe('activated');
     const activated = engine.events.find((e) => e.type === 'activated' && e.cardId === 'abyss');
     expect(activated).toBeDefined();
   });
@@ -377,8 +379,8 @@ describe('先行入力(type-ahead, ADR 0007)', () => {
     // 別カード(index1: meteor)へ構え直す → バッファは進捗ごとリセット
     engine.selectCard(1, 1300);
 
-    // ドレインしても受理する先行入力は残っていない
-    expect(engine.drainTypeahead(2500)).toBe(false);
+    // ドレインしても受理する先行入力は残っていない(空配列)
+    expect(engine.drainTypeahead(2500)).toEqual([]);
     expect(engine.snapshotState().typedRomaji).toBe('');
   });
 });

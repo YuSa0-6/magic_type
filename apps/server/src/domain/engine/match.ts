@@ -384,22 +384,23 @@ export class MatchEngine {
    * 指定陣営のクールダウン明け先行入力をドレインする(ADR 0007)。
    * 発動が起きたらダメージを適用し、KO 判定を同一 atMs の保留点に積む(即確定しない)。
    * UI が時間 tick でドレイン契機を与える経路(ADR 0008)。
-   * 1つでも発動・状態変更があれば true(UI がスナップショットを取り直す判断に使う)。
+   * 受理した各打鍵の結果を順序通りに返す(何もドレインしなければ空配列)。UI 側は
+   * この結果列でクールダウン明けに実際に受理されたぶんだけ音を鳴らし(ADR 0012)、
+   * 取り直しの要否は .length で判断する(空配列は truthy なので真偽では見ない)。
    */
-  drainTypeahead(playerId: string, atMs: number): boolean {
+  drainTypeahead(playerId: string, atMs: number): PressResult[] {
     this.commandLog.push({ type: 'drain', playerId, atMs });
     this.flushPendingKo(atMs);
     if (this.isResolved) {
-      return false;
+      return [];
     }
     const idx = this.indexOf(playerId);
-    const activation = this.sides[idx].drainTypeahead(atMs);
+    const { results, activation } = this.sides[idx].drainTypeahead(atMs);
     if (activation !== null) {
       this.applyActivation(idx, activation);
       this.pendingKoAtMs = atMs;
-      return true;
     }
-    return false;
+    return results;
   }
 
   /**

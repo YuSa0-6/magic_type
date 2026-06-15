@@ -4,6 +4,7 @@
   import { loadDeckIds, defaultDeckIds, resolveDeck } from '../../lib/deck-storage';
   import { MatchTransport } from '../../lib/match-transport.svelte';
   import { SelfPredictor, type SelfTypingPrediction } from '../../lib/match-prediction';
+  import * as sound from '../../lib/sound.svelte';
   import MatchBattleScreen from '../match/MatchBattleScreen.svelte';
   import MatchResultScreen from '../match/MatchResultScreen.svelte';
 
@@ -34,6 +35,15 @@
   // ロビー操作中フラグ(二重押し抑止)。
   let busy = $state(false);
 
+  // 効果音のミュート状態(ADR 0002: 状態は親が sound モジュール経由で保持し props で渡す)。
+  let muted = $state(sound.isMuted());
+
+  // ミュートトグル。状態は sound モジュールが正(localStorage 永続)。
+  function handleToggleMute(): void {
+    sound.toggleMute();
+    muted = sound.isMuted();
+  }
+
   // 自分のデッキ(ID 配列 + 解決済み Card)。提出と予測初期化に使う。
   function selfDeckIds(): string[] {
     return loadDeckIds() ?? defaultDeckIds();
@@ -42,6 +52,9 @@
   // 部屋を作る → コード発行 → そのコードで接続(作成側として着席)。
   async function createRoom(): Promise<void> {
     if (busy) return;
+    // ロビーのボタン操作(ユーザージェスチャ)で音システムを起動(ADR 0012)。
+    // 対戦開始(matchStart)はサーバー駆動でジェスチャを伴わないため、ここで unlock する。
+    sound.resume();
     busy = true;
     try {
       const code = await transport.createRoom();
@@ -58,6 +71,8 @@
   function joinRoom(): void {
     const code = joinCode.trim();
     if (busy || code.length === 0) return;
+    // ロビーのボタン操作(ユーザージェスチャ)で音システムを起動(ADR 0012)。
+    sound.resume();
     transport.connect(code, selfDeckIds());
   }
 
@@ -98,7 +113,12 @@
     }
     const id = setInterval(() => {
       if (predictor === null) return;
-      predictor.drain(now());
+      // 自陣予測のクールダウン明け先行入力をドレイン。受理した各打鍵に音を付ける(ADR 0012)。
+      // これはローカル入力イベント由来で、サーバー権威 push(reconcile)とは無関係。
+      const drained = predictor.drain(now());
+      for (const r of drained) {
+        sound.playForResult(r);
+      }
       prediction = predictor.snapshot();
     }, 100);
     return () => clearInterval(id);
@@ -165,9 +185,14 @@
   function handleSelectCard(handIndex: number): void {
     if (predictor === null) return;
     const t = now();
+    // 選択が実際に変わった時だけ選択音を鳴らす(同カード再選択は no-op, ADR 0012)。
+    const before = predictor.snapshot().selectedIndex;
     predictor.select(handIndex, t);
     transport.enqueueSelect(handIndex, t);
     prediction = predictor.snapshot();
+    if (prediction.selectedIndex !== before) {
+      sound.playSelect();
+    }
   }
 
   // window keydown を一元処理する(対戦中の自陣入力のみ)。Match.svelte と同じ規約。
@@ -186,14 +211,26 @@
     if (e.key >= '1' && e.key <= '4') {
       e.preventDefault();
       const idx = Number(e.key) - 1;
+      // 選択が実際に変わった時だけ選択音を鳴らす(ADR 0012)。
+      const before = predictor.snapshot().selectedIndex;
       predictor.select(idx, t);
       transport.enqueueSelect(idx, t);
       prediction = predictor.snapshot();
+      if (prediction.selectedIndex !== before) {
+        sound.playSelect();
+      }
       return;
     }
     if (e.key === '-' || (e.key.length === 1 && e.key >= 'a' && e.key <= 'z')) {
       e.preventDefault();
-      predictor.press(e.key, t);
+      // ADR 0012: 先に明示ドレインで保留中の先行入力を流して音を鳴らし、その後に当該キーを適用する
+      // (予測 MatchEngine 内部のドレインで音が失われるのを防ぐ。順序は内部と同一)。自陣のみ。
+      const drained = predictor.drain(t);
+      for (const r of drained) {
+        sound.playForResult(r);
+      }
+      const result = predictor.press(e.key, t);
+      sound.playForResult(result);
       transport.enqueuePress(e.key, t);
       prediction = predictor.snapshot();
       imeWarning = false;
@@ -285,6 +322,8 @@
     onSelectCard={handleSelectCard}
     opponentLabel="相手"
     {statusBanner}
+    {muted}
+    onToggleMute={handleToggleMute}
   />
 {:else}
   <!-- matchStart 直後で最初の state がまだ届いていない -->

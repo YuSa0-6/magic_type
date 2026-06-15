@@ -7,6 +7,7 @@
   } from '@magic/server/engine';
   import { loadDeckOrDefault } from '../../lib/deck-storage';
   import { MatchBot } from '../../lib/match-bot';
+  import * as sound from '../../lib/sound.svelte';
   import MatchStartScreen from './MatchStartScreen.svelte';
   import MatchBattleScreen from './MatchBattleScreen.svelte';
   import MatchResultScreen from './MatchResultScreen.svelte';
@@ -38,6 +39,15 @@
   // IME(日本語入力)がオンのまま打鍵された疑いを示す警告フラグ(Game.svelte と同じ扱い)。
   let imeWarning = $state(false);
 
+  // 効果音のミュート状態(ADR 0002: 状態は親が sound モジュール経由で保持し props で渡す)。
+  let muted = $state(sound.isMuted());
+
+  // ミュートトグル。状態は sound モジュールが正(localStorage 永続)。
+  function handleToggleMute(): void {
+    sound.toggleMute();
+    muted = sound.isMuted();
+  }
+
   // 自陣のデッキ(保存済みが正当ならそれ、無ければ STARTER_DECK)+ ボットは固定の既定デッキ。
   function createEngine(): MatchEngine {
     const selfDeck = loadDeckOrDefault();
@@ -68,12 +78,17 @@
     const id = setInterval(() => {
       const now = performance.now();
       // 自陣のクールダウン明け先行入力をドレイン(自陣の時間 tick 契機, ADR 0007/0008)。
-      const selfChanged = engine.drainTypeahead(SELF_ID, now);
+      // 受理した各打鍵に音を付ける(ADR 0012)。自陣のみ。
+      const selfDrained = engine.drainTypeahead(SELF_ID, now);
+      for (const r of selfDrained) {
+        sound.playForResult(r);
+      }
       // ボットの手を進める(相手陣の駆動。内部で相手側の drainTypeahead も行う)。
+      // 相手の操作・発動は無音(ADR 0012: 音は自分の操作起点のみ)。bot.step は音を鳴らさない。
       const botChanged = bot.step(now);
       // 時間切れの権威判定(本来はサーバーの alarm, ADR 0011 #10。v1 はローカルで代行)。
       const timedUp = engine.evaluateTimeUp(now);
-      if (selfChanged || botChanged || timedUp) {
+      if (selfDrained.length > 0 || botChanged || timedUp) {
         refresh(now);
       } else {
         timers = engine.snapshotTimers(SELF_ID, now);
@@ -84,6 +99,8 @@
 
   // 対戦開始。
   function startMatch(): void {
+    // バトル開始のユーザージェスチャ(スペース)で音システムを起動(ADR 0012)。
+    sound.resume();
     const now = performance.now();
     engine.start(now);
     phase = 'battle';
@@ -92,6 +109,7 @@
 
   // リザルトから再戦する。エンジン・ボットを作り直してすぐ開始する。
   function retry(): void {
+    sound.resume();
     engine = createEngine();
     bot = new MatchBot(engine, BOT_ID);
     finalOutcome = null;
@@ -105,8 +123,13 @@
   // カードクリック(マウス操作)。自陣のみ操作可能。
   function handleSelectCard(handIndex: number): void {
     const now = performance.now();
+    // 選択が実際に変わった時だけ選択音を鳴らす(同カード再選択・決着後は no-op, ADR 0012)。
+    const before = snapshot.self.selectedIndex;
     engine.selectCard(SELF_ID, handIndex, now);
     refresh(now);
+    if (snapshot.self.selectedIndex !== before) {
+      sound.playSelect();
+    }
   }
 
   // window の keydown を一元処理する(対戦画面の表示中のみ捕捉される)。Game.svelte と同じ規約。
@@ -143,13 +166,25 @@
     const now = performance.now();
     if (e.key >= '1' && e.key <= '4') {
       e.preventDefault();
+      // 選択が実際に変わった時だけ選択音を鳴らす(ADR 0012)。
+      const before = snapshot.self.selectedIndex;
       engine.selectCard(SELF_ID, Number(e.key) - 1, now);
       refresh(now);
+      if (snapshot.self.selectedIndex !== before) {
+        sound.playSelect();
+      }
       return;
     }
     if (e.key === '-' || (e.key.length === 1 && e.key >= 'a' && e.key <= 'z')) {
       e.preventDefault();
+      // ADR 0012: 先に明示ドレインで保留中の先行入力を流して音を鳴らし、その後に当該キーを適用する
+      // (pressKey 内部のドレインで音が失われるのを防ぐ。順序は pressKey 内部と同一)。自陣のみ。
+      const drained = engine.drainTypeahead(SELF_ID, now);
+      for (const r of drained) {
+        sound.playForResult(r);
+      }
       const result = engine.pressKey(SELF_ID, e.key, now);
+      sound.playForResult(result);
       if (result === 'accepted' || result === 'activated' || result === 'buffered') {
         imeWarning = false;
       }
@@ -163,7 +198,14 @@
 {#if phase === 'start'}
   <MatchStartScreen />
 {:else if phase === 'battle'}
-  <MatchBattleScreen {snapshot} {timers} {imeWarning} onSelectCard={handleSelectCard} />
+  <MatchBattleScreen
+    {snapshot}
+    {timers}
+    {imeWarning}
+    onSelectCard={handleSelectCard}
+    {muted}
+    onToggleMute={handleToggleMute}
+  />
 {:else if finalOutcome}
   <MatchResultScreen outcome={finalOutcome} {snapshot} />
 {/if}

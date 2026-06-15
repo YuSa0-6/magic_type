@@ -400,8 +400,11 @@ describe('先行入力(type-ahead)が per-side で機能する(ADR 0007)', () =>
     }
     // まだ進まない / 相手 HP も変わらない
     expect(m.snapshot('A').opponent.hp).toBe(75);
-    // クールダウン明けにドレインすると全文が受理され発動 → さらに 5 ダメージ
-    expect(m.drainTypeahead('A', 2500)).toBe(true);
+    // クールダウン明けにドレインすると全文が受理され発動 → さらに 5 ダメージ。
+    // 戻り値は受理した各打鍵の結果列(最後の打鍵が 'activated')。
+    const drained = m.drainTypeahead('A', 2500);
+    expect(drained.length).toBe(r.length);
+    expect(drained[drained.length - 1]).toBe('activated');
     expect(m.snapshot('A').opponent.hp).toBe(70);
   });
 });

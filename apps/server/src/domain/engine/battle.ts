@@ -243,15 +243,17 @@ export class BattleEngine {
    * 受理時刻はクールダウン明けの時刻(cooldownUntilMs)で統一するため、
    * castStartedAtMs がクールダウン中まで遡らず、詠唱時間(ADR 0001)が壊れない。
    * 発動でセッションが消えたら以降のバッファは破棄する。
-   * 1つでも適用したら true を返す(UI が入力軸スナップショットを取り直す判断に使う)。
+   * 受理した各打鍵の結果を順序通りに返す(何もドレインしなければ空配列)。
+   * UI 側はこの結果列で「クールダウン明けに実際に受理された打鍵」にのみ音を付けられる
+   * (ADR 0012)。入力軸スナップショットを取り直すかは戻り値の長さで判断する。
    */
-  drainTypeahead(atMs: number): boolean {
+  drainTypeahead(atMs: number): PressResult[] {
     if (this.isOnCooldown(atMs) || this.typeahead.length === 0 || this.session === null) {
       // ドレインできないときはバッファをそのまま保持する(まだクールダウン中など)
       if (this.session === null) {
         this.typeahead = [];
       }
-      return false;
+      return [];
     }
 
     // 受理時刻はクールダウン明けの時刻に統一する(元の打鍵時刻は使わない)
@@ -259,16 +261,15 @@ export class BattleEngine {
     const buffered = this.typeahead;
     this.typeahead = [];
 
-    let applied = false;
+    const results: PressResult[] = [];
     for (const key of buffered) {
       // 発動などでセッションが消えたら以降のバッファは破棄
       if (this.session === null) {
         break;
       }
-      this.applyKey(key, acceptAtMs);
-      applied = true;
+      results.push(this.applyKey(key, acceptAtMs));
     }
-    return applied;
+    return results;
   }
 
   /**

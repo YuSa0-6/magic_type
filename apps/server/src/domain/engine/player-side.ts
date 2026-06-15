@@ -365,8 +365,10 @@ export class PlayerSide {
    * その発動を持ち帰り、続く生打鍵は session が消えるため blocked になる。
    */
   pressKey(key: string, atMs: number): { result: PressResult; activation: Activation | null } {
-    // 保留中の先行入力を先へ流す(クールダウン中・空・セッション無しなら no-op)
-    const drained = this.drainTypeahead(atMs);
+    // 保留中の先行入力を先へ流す(クールダウン中・空・セッション無しなら no-op)。
+    // ドレイン由来の発動だけを持ち帰る(per-key の results は press 経路では使わない。
+    // web 側は ADR 0012 に従い press 前に明示 drainTypeahead を呼んで音を鳴らす)。
+    const drained = this.drainTypeahead(atMs).activation;
 
     if (this.selectedIndex === null || this.session === null) {
       // ドレインで発動が起きていれば、それを持ち帰る(生打鍵自体は blocked)
@@ -388,32 +390,36 @@ export class PlayerSide {
   /**
    * クールダウン明けに先行入力バッファをまとめて受理する(ADR 0007)。
    * 受理時刻はクールダウン明けの時刻(cooldownUntilMs)で統一する。
-   * 発動が起きたら Activation を返す(MatchEngine が相手 HP へ適用する)。
+   * 発動が起きたら activation に同梱して返す(MatchEngine が相手 HP へ適用する)。
    * 発動でセッションが消えたら以降のバッファは破棄する。
+   * results は受理した各打鍵の結果を順序通りに持つ(ADR 0012: UI 側がクールダウン明けに
+   * 実際に受理されたぶんだけ音を鳴らすのに使う。何もドレインしなければ空配列)。
    */
-  drainTypeahead(atMs: number): Activation | null {
+  drainTypeahead(atMs: number): { results: PressResult[]; activation: Activation | null } {
     if (this.isOnCooldown(atMs) || this.typeahead.length === 0 || this.session === null) {
       if (this.session === null) {
         this.typeahead = [];
       }
-      return null;
+      return { results: [], activation: null };
     }
 
     const acceptAtMs = this.cooldownUntilMs;
     const buffered = this.typeahead;
     this.typeahead = [];
 
+    const results: PressResult[] = [];
     let activation: Activation | null = null;
     for (const key of buffered) {
       if (this.session === null) {
         break;
       }
       const applied = this.applyKey(key, acceptAtMs);
+      results.push(applied.result);
       if (applied.activation !== null) {
         activation = applied.activation;
       }
     }
-    return activation;
+    return { results, activation };
   }
 
   /**
