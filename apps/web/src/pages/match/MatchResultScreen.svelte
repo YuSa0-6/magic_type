@@ -7,9 +7,18 @@
   interface Props {
     outcome: MatchOutcome;
     snapshot: MatchSnapshot;
+    /** 相手の表示名(オフラインは「相手(ボット)」、オンラインは「相手」)。 */
+    opponentLabel?: string;
+    /** リザルト下部の操作プロンプト(オンラインは別の導線にするため差し替え可)。 */
+    promptText?: string;
   }
 
-  const { outcome, snapshot }: Props = $props();
+  const {
+    outcome,
+    snapshot,
+    opponentLabel = '相手(ボット)',
+    promptText = 'スペースキーで再戦',
+  }: Props = $props();
 
   // 勝敗の見出し(視点は自陣)。outcome.kind は ongoing 以外がここに来る。
   const heading = $derived.by(() => {
@@ -57,12 +66,12 @@
       <div class="value self">{snapshot.self.hp}/{snapshot.self.maxHp}</div>
     </div>
     <div class="hp-cell">
-      <div class="label">相手(ボット)</div>
+      <div class="label">{opponentLabel}</div>
       <div class="value opp">{snapshot.opponent.hp}/{snapshot.opponent.maxHp}</div>
     </div>
   </div>
 
-  <p class="prompt">スペースキーで再戦</p>
+  <p class="prompt">{promptText}</p>
   <nav class="nav">
     <a class="link" href="/deck" onclick={(e) => handleNavClick(e, 'deck')}>デッキ編集</a>
     <a class="link" href="/" onclick={(e) => handleNavClick(e, 'home')}>ホームへ戻る</a>

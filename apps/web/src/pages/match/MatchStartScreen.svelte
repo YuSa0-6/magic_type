@@ -13,11 +13,12 @@
     <p>先に相手のHPを0にすれば勝ち。時間切れなら残HPの多い方が勝ちです。</p>
     <p class="note">
       ※
-      オンライン対戦は準備中です。今は練習用にボットと対戦できます。デッキは「デッキ編集」で変更できます。
+      これは練習用のボット対戦です。人と対戦するには「オンライン対戦」へ。デッキは「デッキ編集」で変更できます。
     </p>
   </div>
   <p class="prompt">スペースキーで開始</p>
   <nav class="nav">
+    <a class="link" href="/room" onclick={(e) => handleNavClick(e, 'room')}>オンライン対戦</a>
     <a class="link" href="/deck" onclick={(e) => handleNavClick(e, 'deck')}>デッキ編集</a>
     <a class="link" href="/" onclick={(e) => handleNavClick(e, 'home')}>ホームへ戻る</a>
   </nav>

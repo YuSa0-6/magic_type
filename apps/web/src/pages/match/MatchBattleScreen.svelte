@@ -9,9 +9,20 @@
     timers: MatchTimers;
     imeWarning: boolean;
     onSelectCard: (handIndex: number) => void;
+    /** 相手の表示名(オフラインは「相手(ボット)」、オンラインは「相手」)。 */
+    opponentLabel?: string;
+    /** 接続状況などのバナー文言(オンラインの切断/再接続表示用)。未指定なら出さない。 */
+    statusBanner?: string | null;
   }
 
-  const { snapshot, timers, imeWarning, onSelectCard }: Props = $props();
+  const {
+    snapshot,
+    timers,
+    imeWarning,
+    onSelectCard,
+    opponentLabel = '相手(ボット)',
+    statusBanner = null,
+  }: Props = $props();
 
   const self = $derived(snapshot.self);
   const opponent = $derived(snapshot.opponent);
@@ -38,6 +49,11 @@
 </script>
 
 <section class="battle">
+  <!-- 接続状況バナー(オンラインの切断/再接続表示用)。 -->
+  {#if statusBanner}
+    <div class="status-banner" role="status">{statusBanner}</div>
+  {/if}
+
   <!-- 制限時間 -->
   <div class="timebar">
     残り時間 <strong>{formatSeconds(timers.remainingMs)}</strong> 秒
@@ -46,7 +62,7 @@
   <!-- 相手陣(伏せ / 進捗のみ) -->
   <div class="side opponent">
     <div class="side-head">
-      <span class="who">相手(ボット)</span>
+      <span class="who">{opponentLabel}</span>
       <span class="hp-num">{opponent.hp}/{opponent.maxHp}</span>
     </div>
     <div class="hp-row">
@@ -162,6 +178,17 @@
     width: 100%;
     max-width: 720px;
     font-family: 'Courier New', monospace;
+  }
+
+  .status-banner {
+    text-align: center;
+    background: #fff8e1;
+    border: 1px solid #f0c36d;
+    color: #8a6d00;
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.8rem;
+    font-size: 0.95rem;
   }
 
   .timebar {
