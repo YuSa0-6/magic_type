@@ -149,7 +149,7 @@ export class MatchTransport {
 
   /**
    * ルームコードへ WS 接続して join → submitDeck → ready のハンドシェイクを始める。
-   * deckIds はサーバー検証(20 枚・同種最大 2・実在)に渡す自分のデッキ。
+   * deckIds はサーバー検証(15 枚・同種最大 2・実在)に渡す自分のデッキ。
    */
   connect(code: string, deckIds: readonly string[]): void {
     this.code = code.toUpperCase();

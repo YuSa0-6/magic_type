@@ -38,8 +38,8 @@ describe('カードデータの機械検証', () => {
     expect(CARDS.length).toBe(10);
   });
 
-  it('固定デッキは20枚で、同じカードは最大2枚', () => {
-    expect(STARTER_DECK.length).toBe(20);
+  it('固定デッキは15枚で、同じカードは最大2枚', () => {
+    expect(STARTER_DECK.length).toBe(15);
     const counts = new Map<string, number>();
     for (const card of STARTER_DECK) {
       counts.set(card.id, (counts.get(card.id) ?? 0) + 1);

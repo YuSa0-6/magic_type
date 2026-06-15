@@ -10,7 +10,7 @@
   } from '../../lib/deck-storage';
   import { handleNavClick } from '../../lib/router.svelte';
 
-  // デッキビルダー(ADR 0011 #7)。プール(純攻撃10 + 効果6)から 20枚・同種最大2枚 の
+  // デッキビルダー(ADR 0011 #7)。プール(純攻撃10 + 効果6)から 15枚・同種最大2枚 の
   // デッキを構築し localStorage に保存/読込する。判定・永続化のロジックは lib/deck-storage に
   // 集約し、ここは UI と $state の橋渡しだけを持つ(ADR 0002/0006)。
 

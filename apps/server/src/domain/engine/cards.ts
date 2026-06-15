@@ -120,8 +120,8 @@ export const CARDS: readonly Card[] = [
   },
 ];
 
-/** 固定デッキ: 10種 × 各2枚 = 20枚(同種最大2枚の規則を満たす) */
-export const STARTER_DECK: readonly Card[] = CARDS.flatMap((card) => [card, card]);
+/** 固定デッキ: 全10種 各1枚 + 軽い5種(wave〜blaze)をもう1枚 = 15枚(同種最大2枚の規則を満たす) */
+export const STARTER_DECK: readonly Card[] = [...CARDS, ...CARDS.slice(0, 5)];
 
 /**
  * 効果カード 6 枚(ADR 0010 #8 の v1 効果メニュー)。
