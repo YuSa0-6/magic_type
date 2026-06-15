@@ -9,6 +9,7 @@
   import StartScreen from './StartScreen.svelte';
   import BattleScreen from './BattleScreen.svelte';
   import ResultScreen from './ResultScreen.svelte';
+  import * as sound from '../../lib/sound.svelte';
 
   // ゲーム内の画面遷移。'start'(準備) → 'battle' → 'result' と進む。
   type Phase = 'start' | 'battle' | 'result';
@@ -35,6 +36,17 @@
   // 変換中の keydown を検知したら true、半角英小文字の打鍵が受理されたら false に戻す。
   let imeWarning = $state(false);
 
+  // 効果音のミュート状態(ADR 0002: 状態の読み書きは親が sound モジュール経由で行い、
+  // ビュー BattleScreen には props で渡す薄い形にする)。localStorage 永続は sound 側。
+  let muted = $state(sound.isMuted());
+
+  // ミュートトグル。状態は sound モジュールが正(localStorage 永続)。
+  // クリック後はボタンを blur して以後の打鍵を妨げない(ADR 0012)。
+  function handleToggleMute(): void {
+    sound.toggleMute();
+    muted = sound.isMuted();
+  }
+
   // 入力軸スナップショットを取り直し、終了していればリザルトへ遷移する。
   // timers も操作直後に取り直してよい(クールダウン開始などを即反映するため)。
   function refreshState(now: number): void {
@@ -57,8 +69,12 @@
       const now = performance.now();
       // クールダウン明けの先行入力をまとめて受理する。入力軸が変われば取り直す。
       // 遷移ロジック(finished 判定・finalStats 確定・phase 切替)は refreshState に一本化する。
-      const changed = engine.drainTypeahead(now);
-      if (changed) {
+      // 受理した各打鍵に音を付ける(ADR 0012: クールダウン明けに実際に受理されたぶんだけ鳴る)。
+      const drained = engine.drainTypeahead(now);
+      for (const r of drained) {
+        sound.playForResult(r);
+      }
+      if (drained.length > 0) {
         refreshState(now);
       } else {
         timers = engine.snapshotTimers(now);
@@ -69,6 +85,8 @@
 
   // 準備画面で新しいバトルを開始する。
   function startBattle(): void {
+    // バトル開始のユーザージェスチャ(スペース)で音システムを起動(ADR 0012)。
+    sound.resume();
     const now = performance.now();
     engine.start(now);
     phase = 'battle';
@@ -77,6 +95,7 @@
 
   // リザルトから再挑戦する。エンジンを新規に作り直し、すぐバトルを開始する。
   function retry(): void {
+    sound.resume();
     engine = new BattleEngine(STARTER_DECK);
     finalStats = null;
     imeWarning = false;
@@ -89,8 +108,13 @@
   // カードクリック(マウス操作)。クールダウン中でも選択(構え)は可能。
   function handleSelectCard(handIndex: number): void {
     const now = performance.now();
+    // 選択が実際に変わった時だけ選択音を鳴らす(同カード再選択・終了後は no-op, ADR 0012)。
+    const before = battleState.selectedIndex;
     engine.selectCard(handIndex, now);
     refreshState(now);
+    if (battleState.selectedIndex !== before) {
+      sound.playSelect();
+    }
   }
 
   // window の keydown を一元処理する(ゲーム画面の表示中のみ捕捉される)。
@@ -133,14 +157,26 @@
     if (e.key >= '1' && e.key <= '4') {
       // 数字1〜4 → カード選択(0始まりのインデックスへ変換)。
       e.preventDefault();
+      // 選択が実際に変わった時だけ選択音を鳴らす(同カード再選択・終了後は no-op, ADR 0012)。
+      const before = battleState.selectedIndex;
       engine.selectCard(Number(e.key) - 1, now);
       refreshState(now);
+      if (battleState.selectedIndex !== before) {
+        sound.playSelect();
+      }
       return;
     }
     // 英小文字と '-' のみを打鍵としてエンジンへ渡す。
     if (e.key === '-' || (e.key.length === 1 && e.key >= 'a' && e.key <= 'z')) {
       e.preventDefault();
+      // ADR 0012: 先に明示ドレインで保留中の先行入力を流して音を鳴らし(pressKey 内部の
+      // ドレインで音が失われるのを防ぐ)、その後に当該キーを適用する。順序は pressKey 内部と同一。
+      const drained = engine.drainTypeahead(now);
+      for (const r of drained) {
+        sound.playForResult(r);
+      }
       const result = engine.pressKey(e.key, now);
+      sound.playForResult(result);
       // 半角英小文字が正常に受理(発動・先行入力バッファ含む)されたら IME 警告を解除する。
       // クールダウン中の正しい先行入力('buffered')でも IME がオフなのは明らかなので解除する。
       if (result === 'accepted' || result === 'activated' || result === 'buffered') {
@@ -157,7 +193,14 @@
 {#if phase === 'start'}
   <StartScreen />
 {:else if phase === 'battle'}
-  <BattleScreen state={battleState} {timers} {imeWarning} onSelectCard={handleSelectCard} />
+  <BattleScreen
+    state={battleState}
+    {timers}
+    {imeWarning}
+    onSelectCard={handleSelectCard}
+    {muted}
+    onToggleMute={handleToggleMute}
+  />
 {:else if finalStats}
   <ResultScreen stats={finalStats} clearTimeMs={battleState.clearTimeMs ?? 0} />
 {/if}

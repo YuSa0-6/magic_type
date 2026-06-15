@@ -13,6 +13,10 @@
     opponentLabel?: string;
     /** 接続状況などのバナー文言(オンラインの切断/再接続表示用)。未指定なら出さない。 */
     statusBanner?: string | null;
+    /** 効果音のミュート状態(表示専用)。状態は親が sound モジュール経由で保持する。 */
+    muted: boolean;
+    /** ミュート切替を親へ通知する(状態の書き込みは親で行う, ADR 0002)。 */
+    onToggleMute: () => void;
   }
 
   const {
@@ -22,7 +26,15 @@
     onSelectCard,
     opponentLabel = '相手(ボット)',
     statusBanner = null,
+    muted,
+    onToggleMute,
   }: Props = $props();
+
+  // ミュートトグルのクリック。トグル後はボタンを blur して以後の打鍵を妨げない(ADR 0012)。
+  function handleMuteClick(e: MouseEvent): void {
+    onToggleMute();
+    (e.currentTarget as HTMLButtonElement).blur();
+  }
 
   const self = $derived(snapshot.self);
   const opponent = $derived(snapshot.opponent);
@@ -54,9 +66,20 @@
     <div class="status-banner" role="status">{statusBanner}</div>
   {/if}
 
-  <!-- 制限時間 -->
-  <div class="timebar">
-    残り時間 <strong>{formatSeconds(timers.remainingMs)}</strong> 秒
+  <!-- 制限時間 + ミュートトグル(隅) -->
+  <div class="topbar">
+    <div class="timebar">
+      残り時間 <strong>{formatSeconds(timers.remainingMs)}</strong> 秒
+    </div>
+    <button
+      type="button"
+      class="mute"
+      aria-label={muted ? '効果音をオンにする' : '効果音をオフにする'}
+      aria-pressed={muted}
+      onclick={handleMuteClick}
+    >
+      {muted ? '🔇' : '🔊'}
+    </button>
   </div>
 
   <!-- 相手陣(伏せ / 進捗のみ) -->
@@ -191,16 +214,39 @@
     font-size: 0.95rem;
   }
 
+  .topbar {
+    position: relative;
+    margin-bottom: 0.8rem;
+  }
+
   .timebar {
     text-align: center;
     font-size: 1.1rem;
-    margin-bottom: 0.8rem;
     color: #555;
   }
 
   .timebar strong {
     color: #1565c0;
     font-size: 1.3rem;
+  }
+
+  .mute {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    transform: translateY(-50%);
+    border: 1px solid #bbb;
+    border-radius: 6px;
+    background: #fafafa;
+    padding: 0.2rem 0.4rem;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 1rem;
+    line-height: 1;
+  }
+
+  .mute:hover {
+    background: #eee;
   }
 
   .side {

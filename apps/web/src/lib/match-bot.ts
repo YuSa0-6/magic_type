@@ -65,7 +65,9 @@ export class MatchBot {
     }
 
     // クールダウン明けの先行入力を流す(自陣の時間 tick と同じ契機, ADR 0007/0008)。
-    let changed = this.engine.drainTypeahead(this.playerId, now);
+    // drainTypeahead は受理した打鍵の結果列を返す(ADR 0012)。ボットは相手陣なので音は
+    // 鳴らさない。状態が変わったかは .length で見る(空配列は truthy なので真偽では見ない)。
+    let changed = this.engine.drainTypeahead(this.playerId, now).length > 0;
 
     if (now < this.nextActionAtMs) {
       return changed;

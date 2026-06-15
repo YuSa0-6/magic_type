@@ -9,9 +9,19 @@
     timers: BattleTimers;
     imeWarning: boolean;
     onSelectCard: (handIndex: number) => void;
+    /** 効果音のミュート状態(表示専用)。状態は親が sound モジュール経由で保持する。 */
+    muted: boolean;
+    /** ミュート切替を親へ通知する(状態の書き込みは親で行う, ADR 0002)。 */
+    onToggleMute: () => void;
   }
 
-  const { state, timers, imeWarning, onSelectCard }: Props = $props();
+  const { state, timers, imeWarning, onSelectCard, muted, onToggleMute }: Props = $props();
+
+  // ミュートトグルのクリック。トグル後はボタンを blur して以後の打鍵を妨げない(ADR 0012)。
+  function handleMuteClick(e: MouseEvent): void {
+    onToggleMute();
+    (e.currentTarget as HTMLButtonElement).blur();
+  }
 
   // HPのテキストバー(████████░░ 形式)を作る。表示専用の整形であり判定ではない。
   const BAR_LENGTH = 10;
@@ -39,7 +49,18 @@
       的のHP: <span class="bar">{hpBar}</span>
       {state.targetHp}/{state.targetMaxHp}
     </div>
-    <div class="time">経過時間: {formatSeconds(timers.elapsedMs)}秒</div>
+    <div class="status-right">
+      <div class="time">経過時間: {formatSeconds(timers.elapsedMs)}秒</div>
+      <button
+        type="button"
+        class="mute"
+        aria-label={muted ? '効果音をオンにする' : '効果音をオフにする'}
+        aria-pressed={muted}
+        onclick={handleMuteClick}
+      >
+        {muted ? '🔇' : '🔊'}
+      </button>
+    </div>
   </div>
 
   <!-- 手札4枚 -->
@@ -102,8 +123,30 @@
   .status {
     display: flex;
     justify-content: space-between;
+    align-items: center;
     font-size: 1.1rem;
     margin-bottom: 1rem;
+  }
+
+  .status-right {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+
+  .mute {
+    border: 1px solid #bbb;
+    border-radius: 6px;
+    background: #fafafa;
+    padding: 0.2rem 0.4rem;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 1rem;
+    line-height: 1;
+  }
+
+  .mute:hover {
+    background: #eee;
   }
 
   .bar {
