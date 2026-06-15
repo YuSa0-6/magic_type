@@ -62,11 +62,17 @@
   }
 
   // matchStart / matchResumed を受けたら予測エンジンを(再)初期化する。
-  // 再接続時も同じ seed + 自デッキで作り直し、権威 state で表示を回復させる(予測はそこから先行)。
+  // 再接続時も同じ seed + role + 自デッキで作り直し、権威 state で表示を回復させる(予測はそこから先行)。
+  //
+  // role を渡すのが要(B3 監査 should-fix): 各陣営の山札 RNG は side index 派生ストリーム
+  // (ADR 0011 #13)で、権威は role 順に side を割り当てる。self を実 role index に置かないと
+  // 初期手札が権威と恒常的に食い違い reconcile が常時フォールバックして参加側(role1)の打鍵
+  // 予測が効かなくなる。role は joined で確定済み(matchStart より前)。
   function initPredictor(): void {
     const start = transport.start;
-    if (start === null) return;
-    predictor = new SelfPredictor(start.seed, resolveDeck(selfDeckIds()));
+    const role = transport.role;
+    if (start === null || role === null) return;
+    predictor = new SelfPredictor(start.seed, role, start.selfId, resolveDeck(selfDeckIds()));
     predictor.start(now());
     prediction = predictor.snapshot();
   }
