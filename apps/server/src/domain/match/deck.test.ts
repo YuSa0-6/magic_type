@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { validateDeck, DECK_SIZE, MAX_PER_CARD, CARD_POOL } from './deck.ts';
 import { CARDS, EFFECT_CARDS } from '../engine/index.ts';
 
-/** ちょうど 20 枚・同種最大 2 の合法デッキ(純攻撃 10 種 × 2)。 */
+/** ちょうど 15 枚・同種最大 2 の合法デッキ(純攻撃 10 種 + 軽い 5 種をもう 1 枚)。 */
 function legalDeckIds(): string[] {
-  return CARDS.flatMap((c) => [c.id, c.id]);
+  return [...CARDS.map((c) => c.id), ...CARDS.slice(0, 5).map((c) => c.id)];
 }
 
 describe('サーバー側デッキ検証(validateDeck)', () => {
@@ -13,7 +13,7 @@ describe('サーバー側デッキ検証(validateDeck)', () => {
     expect(CARD_POOL.length).toBe(16);
   });
 
-  it('20 枚・同種最大 2・実在カードなら valid で Card 配列に解決される', () => {
+  it('15 枚・同種最大 2・実在カードなら valid で Card 配列に解決される', () => {
     const result = validateDeck(legalDeckIds());
     expect(result.valid).toBe(true);
     if (result.valid) {
@@ -23,38 +23,38 @@ describe('サーバー側デッキ検証(validateDeck)', () => {
     }
   });
 
-  it('効果カードを混ぜても 20 枚・同種最大 2 なら valid', () => {
-    // 純攻撃 7 種 × 2 + 効果 6 種 × 1 = 20 枚。
+  it('効果カードを混ぜても 15 枚・同種最大 2 なら valid', () => {
+    // 純攻撃 4 種 × 2 + 効果 6 種 × 1 + 純攻撃 1 種 × 1 = 15 枚。
     const ids = [
-      ...CARDS.slice(0, 7).flatMap((c) => [c.id, c.id]),
+      ...CARDS.slice(0, 4).flatMap((c) => [c.id, c.id]),
       ...EFFECT_CARDS.map((c) => c.id),
+      CARDS[4].id,
     ];
     expect(ids.length).toBe(DECK_SIZE);
     expect(validateDeck(ids).valid).toBe(true);
   });
 
-  it('19 枚は invalid(枚数境界・下)', () => {
-    const ids = legalDeckIds().slice(0, 19);
+  it('14 枚は invalid(枚数境界・下)', () => {
+    const ids = legalDeckIds().slice(0, 14);
     const result = validateDeck(ids);
     expect(result.valid).toBe(false);
     if (!result.valid) {
-      expect(result.errors.some((e) => e.includes('20枚'))).toBe(true);
+      expect(result.errors.some((e) => e.includes('15枚'))).toBe(true);
     }
   });
 
-  it('21 枚は invalid(枚数境界・上)', () => {
-    const ids = [...legalDeckIds(), CARDS[0].id];
+  it('16 枚は invalid(枚数境界・上)', () => {
+    const ids = [...legalDeckIds(), CARDS[9].id];
     expect(validateDeck(ids).valid).toBe(false);
   });
 
   it('同種 3 枚は invalid(同種上限境界)', () => {
-    // wave を 3 枚にして 1 種を 1 枚減らし合計 20 枚を保つ。
+    // wave を 3 枚にして合計 15 枚を保つ。
     const ids = [
       CARDS[0].id,
       CARDS[0].id,
       CARDS[0].id, // wave ×3
-      CARDS[1].id, // spark ×1(本来 2 だが 1 にして合計 20 維持)
-      ...CARDS.slice(2).flatMap((c) => [c.id, c.id]),
+      ...CARDS.slice(1, 7).flatMap((c) => [c.id, c.id]),
     ];
     expect(ids.length).toBe(DECK_SIZE);
     const result = validateDeck(ids);
@@ -69,7 +69,7 @@ describe('サーバー側デッキ検証(validateDeck)', () => {
   });
 
   it('不明なカード ID を含むと invalid', () => {
-    const ids = [...legalDeckIds().slice(0, 19), 'NOT_A_CARD'];
+    const ids = [...legalDeckIds().slice(0, 14), 'NOT_A_CARD'];
     const result = validateDeck(ids);
     expect(result.valid).toBe(false);
     if (!result.valid) {

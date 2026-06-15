@@ -12,9 +12,9 @@ import {
 } from './room.ts';
 import { CARDS, MatchEngine } from '../engine/index.ts';
 
-/** 合法デッキ(20 枚・同種最大 2)の ID 配列。 */
+/** 合法デッキ(15 枚・同種最大 2)の ID 配列。 */
 function legalDeckIds(): string[] {
-  return CARDS.flatMap((c) => [c.id, c.id]);
+  return [...CARDS.map((c) => c.id), ...CARDS.slice(0, 5).map((c) => c.id)];
 }
 
 /** join → 成功を前提に state を取り出すヘルパ。 */
@@ -97,11 +97,11 @@ describe('ルームのライフサイクル', () => {
     if (start.ok) {
       expect(start.value.state.phase).toBe('started');
       expect(start.value.playerIds).toEqual(['p1', 'p2']);
-      // MatchConfig に両デッキ(20 枚)と seed が入る。
+      // MatchConfig に両デッキ(15 枚)と seed が入る。
       expect(start.value.config.players[0].id).toBe('p1');
       expect(start.value.config.players[1].id).toBe('p2');
-      expect(start.value.config.players[0].deck.length).toBe(20);
-      expect(start.value.config.players[1].deck.length).toBe(20);
+      expect(start.value.config.players[0].deck.length).toBe(15);
+      expect(start.value.config.players[1].deck.length).toBe(15);
       expect(start.value.config.options?.masterSeed).toBe(0xdead_beef);
     }
   });
@@ -125,8 +125,8 @@ describe('ルームのライフサイクル', () => {
     let room = createRoom('ABC123');
     room = joinOrThrow(room, 'p1');
     room = joinOrThrow(room, 'p2');
-    // p1 は不正(19 枚)。
-    const bad = submitDeck(room, 'p1', legalDeckIds().slice(0, 19));
+    // p1 は不正(14 枚)。
+    const bad = submitDeck(room, 'p1', legalDeckIds().slice(0, 14));
     expect(bad.ok).toBe(false);
     if (!bad.ok) {
       expect(bad.error.kind).toBe('invalid_deck');

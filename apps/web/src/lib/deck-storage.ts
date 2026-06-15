@@ -2,7 +2,7 @@
  * デッキの構築規則・検証・永続化(ADR 0011 #7)。
  *
  * デッキは localStorage に保存し、対戦開始時にサーバーへ送ってサーバーが合法性を
- * 検証する(20 枚・同種最大 2・実在カード)のが本来の流れ(ADR 0011 #7)。v1 は
+ * 検証する(15 枚・同種最大 2・実在カード)のが本来の流れ(ADR 0011 #7)。v1 は
  * オフライン(対ボット)なのでサーバーは無く、ここで同じ規則をクライアント検証する。
  *
  * 保存形式はカード ID の配列(`string[]`)。Card オブジェクトそのものは保存せず、
@@ -13,7 +13,7 @@
 import { CARDS, EFFECT_CARDS, STARTER_DECK, type Card } from '@magic/server/engine';
 
 /** デッキの規定枚数(ADR 0010/0011, CONTEXT.md「デッキ」)。 */
-export const DECK_SIZE = 20;
+export const DECK_SIZE = 15;
 /** 同種カードの上限枚数。 */
 export const MAX_PER_CARD = 2;
 
@@ -37,7 +37,7 @@ export interface DeckValidation {
 }
 
 /**
- * カード ID 配列を検証する(20 枚・同種最大 2・実在カード, ADR 0011 #7)。
+ * カード ID 配列を検証する(15 枚・同種最大 2・実在カード, ADR 0011 #7)。
  * UI のボタン活性判定とエラー表示の両方からこの 1 関数を使う。
  */
 export function validateDeck(cardIds: readonly string[]): DeckValidation {

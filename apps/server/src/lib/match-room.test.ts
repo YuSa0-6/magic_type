@@ -22,8 +22,11 @@ const byId = (id: string): Card => {
 };
 const romajiOf = (card: Card): string => new TypingSession(card.reading).remainingGuide;
 
-/** 合法デッキ(各カード 2 枚 = 20 枚)。サーバー検証(20 枚/同種最大2/実在)を満たす。 */
-const legalDeck = (): string[] => CARDS.flatMap((c) => [c.id, c.id]);
+/** 合法デッキ(15 枚・同種最大 2)。サーバー検証(15 枚/同種最大2/実在)を満たす。 */
+const legalDeck = (): string[] => [
+  ...CARDS.map((c) => c.id),
+  ...CARDS.slice(0, 5).map((c) => c.id),
+];
 
 /** 1 カードを詠唱しきる input コマンド列。 */
 function castCommands(handIndex: number, cardId: string, atMs: number): InputCommand[] {

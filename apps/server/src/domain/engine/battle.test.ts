@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { BattleEngine } from './battle';
-import { STARTER_DECK } from './cards';
+import { CARDS } from './cards';
+
+/**
+ * エンジン機構テスト用の固定デッキ(全10種×各2枚=20枚)。
+ * 製品の STARTER_DECK(15枚)とは独立に、決定論シャッフルの golden 値を固定するため
+ * ここでローカルに 20 枚デッキを定義する(STARTER_DECK の構成変更でこのテストが壊れない)。
+ */
+const TEST_DECK = CARDS.flatMap((card) => [card, card]);
 
 /**
  * 決定論的な疑似乱数(mulberry32)。固定シードで山札のシャッフルを再現する。
@@ -18,7 +25,7 @@ function mulberry32(seed: number): () => number {
 }
 
 /**
- * シード12345での初期配置(STARTER_DECK基準, 20枚):
+ * シード12345での初期配置(TEST_DECK 基準, 20枚):
  *   手札 = [abyss(16), gale(5), blaze(8), ray(10)]
  *   山札(引く順) = meteor(14), abyss(16), wave(3), blaze(8), thunder(9), ray(10), ...(計16枚)
  */
@@ -40,7 +47,7 @@ const ROMAJI: Record<string, string> = {
 
 /** シード固定でエンジンを作る */
 function makeEngine(targetHp?: number): BattleEngine {
-  return new BattleEngine(STARTER_DECK, { targetHp, rng: mulberry32(SEED) });
+  return new BattleEngine(TEST_DECK, { targetHp, rng: mulberry32(SEED) });
 }
 
 /**
