@@ -470,3 +470,92 @@ describe('MatchSession: 一時停止と権威時計の凍結(B3, ADR 0011 #8/#11
 
 /** snapshotFor のテストで使う既定制限時間(MATCH_DEFAULT_TIME_LIMIT_MS と同値)。 */
 const MATCH_TIME_DEFAULT = 120_000;
+
+describe('MatchSession: serialize/restore + 時間切れ deadline 換算(ADR 0012)', () => {
+  it('serialize → restore で権威クロックと進行状態が一致する(decision continuity)', () => {
+    const config = makeConfig({ deckA: monoDeck('gale'), deckB: monoDeck('gale') });
+    const engine = new MatchEngine(config.players, config.options);
+    const session = new MatchSession(engine, config);
+    session.start(0);
+    // A が 1 枚詠唱して B を削る(意味的状態変化)。
+    session.enqueueInput('A', castCommands(0, 'gale', 100), 100);
+    session.tick(confirmAt(100));
+    const hpBefore = session.snapshotFor('B', confirmAt(100)).self.hp;
+    const confirmedBefore = session.confirmedAtMs;
+    const sigBefore = session.stateSignature();
+    expect(hpBefore).toBeLessThan(80);
+
+    // serialize → 別エンジン/セッションへ restore(DO 退避→復元の擬似)。
+    const engineDto = engine.serialize();
+    const sessionDto = session.serialize();
+    const engine2 = MatchEngine.restore(config, engineDto);
+    const session2 = MatchSession.restore(engine2, config, sessionDto);
+
+    // 復元後の権威状態が一致する(HP・確定権威時刻・シグネチャ)。
+    expect(session2.snapshotFor('B', confirmAt(100)).self.hp).toBe(hpBefore);
+    expect(session2.confirmedAtMs).toBe(confirmedBefore);
+    expect(session2.stateSignature()).toBe(sigBefore);
+    expect(session2.finished).toBe(false);
+
+    // 復元後に続けて打つと、中断なしと同じく削れ続ける(決定論)。
+    session2.enqueueInput('A', castCommands(0, 'gale', 2000), 2000);
+    session2.tick(confirmAt(2000));
+    expect(session2.snapshotFor('B', confirmAt(2000)).self.hp).toBeLessThan(hpBefore);
+  });
+
+  it('未確定の入力バッファも serialize/restore を跨いで保持される', () => {
+    const { engine, session } = makeSession({ deckA: monoDeck('gale'), deckB: monoDeck('gale') });
+    session.start(0);
+    // authClock が届かない未来の atMs へ積む(tick しても確定しない=バッファに残る)。
+    session.enqueueInput('A', castCommands(0, 'gale', 5000), 5000);
+    session.tick(confirmAt(0)); // 5000 はまだ未確定(バッファに残る)。
+    const config = makeConfig({ deckA: monoDeck('gale'), deckB: monoDeck('gale') });
+    const session2 = MatchSession.restore(
+      MatchEngine.restore(config, engine.serialize()),
+      config,
+      session.serialize()
+    );
+    // 復元後に authClock を 5000 まで進めると、保持されていたバッファ入力が確定して削れる。
+    expect(session2.snapshotFor('B', confirmAt(0)).self.hp).toBe(80);
+    session2.tick(confirmAt(5000));
+    expect(session2.snapshotFor('B', confirmAt(5000)).self.hp).toBeLessThan(80);
+  });
+
+  it('pause 状態も restore され、resume の凍結オフセットが連続する', () => {
+    const { engine, session } = makeSession();
+    session.start(1000);
+    session.pause(2000); // 実時刻 2000 で凍結。
+    const config = makeConfig();
+    const session2 = MatchSession.restore(
+      MatchEngine.restore(config, engine.serialize()),
+      config,
+      session.serialize()
+    );
+    expect(session2.paused).toBe(true);
+    // 凍結中は時間切れ deadline 換算が null(誤発火しない)。
+    expect(session2.timeLimitDeadlineWallMs()).toBeNull();
+    // 再開すると凍結ぶん(2000→12000 = 10000ms)が pausedOffset へ畳まれ、deadline が後ろへずれる。
+    session2.resume(12_000);
+    expect(session2.paused).toBe(false);
+  });
+
+  it('timeLimitDeadlineWallMs は 開始時刻 + 制限時間 + INPUT_DELAY + 凍結ぶん を返す', () => {
+    const { session } = makeSession({ timeLimitMs: 60_000 });
+    expect(session.timeLimitDeadlineWallMs()).toBeNull(); // 未開始は null。
+    session.start(1000);
+    // auth deadline = 1000 + 60000、壁時計換算 = + INPUT_DELAY、凍結ぶん 0。
+    expect(session.timeLimitDeadlineWallMs()).toBe(1000 + 60_000 + INPUT_DELAY_MS);
+    // 10000ms 凍結すると deadline がその分後ろへずれる(pause 追従)。
+    session.pause(5000);
+    session.resume(15_000); // 凍結 10000ms。
+    expect(session.timeLimitDeadlineWallMs()).toBe(1000 + 60_000 + INPUT_DELAY_MS + 10_000);
+  });
+
+  it('決着後は時間切れ deadline 換算が null(予約不要)', () => {
+    const { session } = makeSession({ timeLimitMs: 10_000 });
+    session.start(0);
+    session.forfeit('A', 1000); // B の win で決着。
+    expect(session.finished).toBe(true);
+    expect(session.timeLimitDeadlineWallMs()).toBeNull();
+  });
+});

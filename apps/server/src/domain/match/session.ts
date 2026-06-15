@@ -46,12 +46,13 @@
  *    ないため、連続打鍵を最小間隔へ"広げる"ことはしない。
  */
 
-import type {
-  MatchConfig,
-  MatchEngine,
-  MatchOutcome,
-  MatchSnapshot,
-  MatchTimers,
+import {
+  MATCH_DEFAULT_TIME_LIMIT_MS,
+  type MatchConfig,
+  type MatchEngine,
+  type MatchOutcome,
+  type MatchSnapshot,
+  type MatchTimers,
 } from '../engine/index.ts';
 
 /**
@@ -95,12 +96,40 @@ interface BufferedInput {
 }
 
 /**
+ * `MatchSession` の権威クロック状態の直列化(プレーンデータ, ADR 0012)。
+ *
+ * engine の状態は `MatchEngine.serialize()` が別に持つので、ここは「session が独自に持つ
+ * 権威時計の進み・一時停止オフセット・未確定の入力バッファ」だけを直列化する。DO が
+ * `ctx.storage` へ engine DTO と一緒に書き、起動時に `restore` で復元する。これで DO 退避・
+ * 再起動後も authClock / lastConfirmedAtMs / pausedOffset が一致し、決定論と時計が壊れない。
+ *
+ * pausedSinceMs(壁時計の停止開始時刻)は復元側で「停止していた=要再開待ち」かどうかの
+ * 真偽だけが本質的に意味を持つ(再開時に nowMs との差分が pausedOffset へ畳まれるため)。
+ * 退避→復元では停止していた実時間も経過しているが、復元後に DO が現況を再評価して resume/
+ * forfeit を判断するため、ここでは「停止していたか(pausedSinceMs !== null)」を素直に保存する。
+ */
+export interface MatchSessionDTO {
+  readonly started: boolean;
+  readonly startAtMs: number | null;
+  readonly lastConfirmedAtMs: number;
+  readonly pausedOffsetMs: number;
+  readonly pausedSinceMs: number | null;
+  readonly buffer: readonly BufferedInput[];
+}
+
+/**
  * 権威ループのコーディネータ。1 マッチ = 1 インスタンス(DO が保持)。
  * 副作用(時刻・WebSocket 送信・setInterval)は持たず、すべて呼び出し側が注入する。
  */
 export class MatchSession {
   private readonly engine: MatchEngine;
   private readonly ids: readonly [string, string];
+  /**
+   * 制限時間(ミリ秒)。config.options から取り込む(engine は private 保持のため)。
+   * 終了専用 alarm の deadline 算出(ADR 0011 #10 / 0012)に使う。engine の timeLimitMs と
+   * 同値(同じ config から構築するため)。
+   */
+  private readonly timeLimitMs: number;
 
   /** 開始済みか(start を 1 度だけ呼ぶためのフラグ)。 */
   private started = false;
@@ -145,6 +174,7 @@ export class MatchSession {
   constructor(engine: MatchEngine, config: MatchConfig) {
     this.engine = engine;
     this.ids = [config.players[0].id, config.players[1].id];
+    this.timeLimitMs = config.options?.timeLimitMs ?? MATCH_DEFAULT_TIME_LIMIT_MS;
   }
 
   /** 既知の playerId か(未着席・未知 id の入力を弾く土台)。 */
@@ -400,6 +430,73 @@ export class MatchSession {
   /** 直近 tick で確定した権威時刻(テスト/将来用。authClock の進みを観測する)。 */
   get confirmedAtMs(): number {
     return this.lastConfirmedAtMs;
+  }
+
+  /**
+   * 視点非依存の権威スナップショットシグネチャ(ADR 0012 のチェックポイント書き込み契機)。
+   *
+   * DO は 10Hz の全 tick で storage へ書くのを避け、「state が意味的に変わった tick(発動 / KO /
+   * 効果適用でシグネチャが変化したとき)」にだけ checkpoint する。そのための差分検知に使う。
+   * 両陣営の入力軸シグネチャ + outcome を畳む(時間軸 timers は毎 tick 動くため含めない)。
+   * 順序契約: 直前に flush して保留中の KO を確定させてから読む。
+   */
+  stateSignature(): string {
+    this.engine.flush();
+    return signatureOf(this.engine.snapshot(this.ids[0]));
+  }
+
+  /**
+   * 制限時間切れの権威 deadline を「壁時計(実時間)」へ換算して返す(ADR 0012 の alarm 用)。
+   *
+   * 権威 deadline(auth 時間)= `startAtMs + timeLimitMs`。authClock がこの値へ到達するのは
+   * `authWall(now) - INPUT_DELAY_MS >= deadline`、すなわち
+   *   `wallNow >= deadline + INPUT_DELAY_MS + pausedOffsetMs`
+   * のとき(authWall = wallNow - pausedOffsetMs)。この右辺を返す。
+   *
+   * 一時停止中(凍結)は authClock が進まないため deadline は到来しない → null を返す
+   * (alarm 側は停止中は猶予 deadline だけを予約する。凍結中に旧 deadline で誤発火しないため)。
+   * 未開始・決着後も null(予約不要)。
+   */
+  timeLimitDeadlineWallMs(): number | null {
+    if (!this.started || this.startAtMs === null || this.engine.finished || this.paused) {
+      return null;
+    }
+    const authDeadline = this.startAtMs + this.timeLimitMs;
+    return authDeadline + INPUT_DELAY_MS + this.pausedOffsetMs;
+  }
+
+  /**
+   * session の権威クロック状態を直列化する(ADR 0012)。engine の状態は別途
+   * `MatchEngine.serialize()` が持つため、ここは session 固有の時計・バッファだけを出す。
+   */
+  serialize(): MatchSessionDTO {
+    return {
+      started: this.started,
+      startAtMs: this.startAtMs,
+      lastConfirmedAtMs: this.lastConfirmedAtMs,
+      pausedOffsetMs: this.pausedOffsetMs,
+      pausedSinceMs: this.pausedSinceMs,
+      buffer: this.buffer.map((b) => ({ ...b })),
+    };
+  }
+
+  /**
+   * 直列化状態から MatchSession を復元する静的ファクトリ(ADR 0012)。
+   * 復元済み engine(`MatchEngine.restore`)と同一 config から新規 session を作り、DTO の
+   * 権威クロック(started/startAtMs/lastConfirmedAtMs/pausedOffset/pausedSince)と未確定の
+   * 入力バッファを上書きする。これで DO 退避・再起動後も authClock / クランプ基準 / 凍結が
+   * 一致し、中断なしと同一に続行できる(決定論)。lastSignature は揮発(復元後の最初の
+   * snapshot/delta で配り直す)。
+   */
+  static restore(engine: MatchEngine, config: MatchConfig, dto: MatchSessionDTO): MatchSession {
+    const session = new MatchSession(engine, config);
+    session.started = dto.started;
+    session.startAtMs = dto.startAtMs;
+    session.lastConfirmedAtMs = dto.lastConfirmedAtMs;
+    session.pausedOffsetMs = dto.pausedOffsetMs;
+    session.pausedSinceMs = dto.pausedSinceMs;
+    session.buffer = dto.buffer.map((b) => ({ ...b }));
+    return session;
   }
 }
 
