@@ -168,7 +168,9 @@ B3(web 配線 + 自陣予測 + 再接続)の実装で、設計上の含みを次
     (`join.resumeId`)で同じ席へ復帰し、`resume` で停止実時間を `pausedOffsetMs` へ畳み込んでから
     `matchResumed`(seed/self/opponent)+ 現況 `state` を配って表示を回復する。engine の playerId は
     matchStart で固定されるため、再接続後の新しい WS でも席 id(`seatId`)で入力を正しい陣営へ積む。
-    猶予を超過したら切断側を `engine.forfeit`(#12)で放棄負けにし `matchEnd` を配る。単一 DO が
+    猶予を超過したら切断側を `engine.forfeit`(#12)で放棄負けにし `matchEnd` を配る。なお一時停止中は
+    権威時計が凍結する(#11)ため、接続側が猶予中に詠唱し切った致死打鍵もバッファされたまま適用されず、
+    相手が復帰しなければ KO ではなく forfeit で決着する(勝者は同じ接続側で公平性に問題はない)。単一 DO が
     メモリ常駐で権威状態を保持するため、B3 では serialize/restore(A3)を再接続経路で使わない(将来
     DO 退避・ハイバネーションが必要になったときに #4 の土台を使う)。
 
