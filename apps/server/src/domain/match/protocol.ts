@@ -1,10 +1,12 @@
 /**
- * 対戦 WebSocket メッセージのプロトコル(B1 + B2, ADR 0011 #2/#6/#7/#10)。
+ * 対戦 WebSocket メッセージのプロトコル(B1 + B2 + B3, ADR 0011 #2/#6/#7/#8/#10/#11)。
  *
  * 純データの型定義のみ(Hono/Workers 非依存, ADR 0004)。DO(lib)と web が同じ語彙で
  * 通信するための契約。B1 は「ルームに繋がる → デッキ提出 → 検証 → seed 配布 → matchStart」、
  * B2 は「打鍵ストリーム(input)→ サーバー権威実行 → 状態デルタ(state, 10Hz)→ 終了
- * (matchEnd)」を定義する。予測/和解/再接続(B3)のメッセージはここに含めない(範囲外)。
+ * (matchEnd)」、B3 は「切断猶予つき再接続(join.resumeId / matchResumed /
+ * opponentConnection)」を定義する。予測/和解の内部表現はここに含めない(クライアント実装の
+ * 範囲, ADR 0011 #1/#9)。
  *
  * 受信側が判別共用体として `type` で分岐できるよう、すべてのメッセージは `type` を持つ。
  */
@@ -13,10 +15,14 @@ import type { InputCommand, StatePayload } from './session.ts';
 
 export type { InputCommand, StatePayload } from './session.ts';
 
-/** client → server のメッセージ(B1 + B2)。 */
+/** client → server のメッセージ(B1 + B2 + B3 再接続)。 */
 export type ClientMessage =
-  /** ルームへ参加する(コードは接続 URL で渡すため本文では任意・将来拡張用)。 */
-  | { readonly type: 'join'; readonly code?: string }
+  /**
+   * ルームへ参加する(コードは接続 URL で渡すため本文では任意・将来拡張用)。
+   * 再接続(B3, ADR 0011 #8)では、切断前に発行されたエフェメラル ID を `resumeId` で
+   * 渡すと、開始済みマッチでも同じ席へ復帰できる(空席なら新規着席)。
+   */
+  | { readonly type: 'join'; readonly code?: string; readonly resumeId?: string }
   /** デッキ(カード ID 配列)を提出してサーバー検証を依頼する。 */
   | { readonly type: 'submitDeck'; readonly deckIds: readonly string[] }
   /** マッチ開始に同意(ready)する。 */
@@ -27,7 +33,7 @@ export type ClientMessage =
    */
   | { readonly type: 'input'; readonly commands: readonly InputCommand[] };
 
-/** server → client のメッセージ(B1)。 */
+/** server → client のメッセージ(B1 + B2 + B3)。 */
 export type ServerMessage =
   /** 参加受理。発行したエフェメラル ID と席(role)を通知する。 */
   | { readonly type: 'joined'; readonly ephemeralId: string; readonly role: 0 | 1 }
@@ -59,6 +65,23 @@ export type ServerMessage =
       readonly outcome: ServerOutcome;
       readonly result: { readonly winnerId: string | null; readonly endReason: string };
     }
+  /**
+   * 再接続でマッチへ復帰した(B3, ADR 0011 #8)。開始済みマッチへ resumeId で席復帰した
+   * クライアントへ、権威ループの初期化に必要な seed と self/opponent の id を再配布する。
+   * 続いて現況の `state` を 1 度配って表示を回復させる(matchStart と同じ初期化契約)。
+   */
+  | {
+      readonly type: 'matchResumed';
+      readonly seed: number;
+      readonly selfId: string;
+      readonly opponentId: string;
+    }
+  /**
+   * 相手の接続状態が変わった(B3 切断猶予, ADR 0011 #8/#11)。`paused=true` は相手が切断して
+   * 猶予つき一時停止(権威時計凍結)に入ったこと、`false` は相手が再接続して再開したことを表す。
+   * 表示用(「相手が切断しました。再接続を待っています…」等)で、権威状態は別途 `state` で配る。
+   */
+  | { readonly type: 'opponentConnection'; readonly paused: boolean }
   /** エラー(不正デッキ・満室・未知コード等)。message は人間可読の理由。 */
   | { readonly type: 'error'; readonly message: string };
 
@@ -72,10 +95,17 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
   }
   const msg = raw as Record<string, unknown>;
   switch (msg.type) {
-    case 'join':
-      return msg.code === undefined || typeof msg.code === 'string'
-        ? { type: 'join', code: msg.code as string | undefined }
+    case 'join': {
+      const codeOk = msg.code === undefined || typeof msg.code === 'string';
+      const resumeOk = msg.resumeId === undefined || typeof msg.resumeId === 'string';
+      return codeOk && resumeOk
+        ? {
+            type: 'join',
+            code: msg.code as string | undefined,
+            resumeId: msg.resumeId as string | undefined,
+          }
         : null;
+    }
     case 'submitDeck':
       return Array.isArray(msg.deckIds) && msg.deckIds.every((x) => typeof x === 'string')
         ? { type: 'submitDeck', deckIds: msg.deckIds as string[] }

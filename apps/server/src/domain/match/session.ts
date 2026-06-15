@@ -17,7 +17,7 @@
  *  時間切れ)は tick の遅延権威クロック `authClock = nowMs - INPUT_DELAY_MS` でのみ起きる。
  *  tick ごとに atMs <= authClock の両者入力をバッファから取り出し、グローバルに
  *  (atMs, playerId) で安定ソートして engine へ順に適用する。INPUT_DELAY ぶん遅らせることで
- *  「両者の atMs=T の入力は authClock が T を越える前に必ずバッファに揃う」ことを保証し、
+ *  「両者の atMs=T の入力は authClock が T を越える前に必ずバッファへ揃う」ことを保証し、
  *  ソートで同一 atMs が隣接 → 解決前に両方適用される。auto-flush(engine)もソート列なら
  *  同一 atMs 隣接が保たれるため整合し、厳密な同時撃破も draw になる。
  *
@@ -25,6 +25,14 @@
  *  のみ起きる。applyInput は engine を一切呼ばず副作用がない(snapshot/finished も読まない)。
  *  snapshot/delta も読む直前に flush するが、tick で既に authClock まで適用済みなので
  *  「未適用の同一 atMs 入力を取りこぼした状態を確定させる」ことはない。
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * ── 切断猶予つき一時停止(B3, ADR 0011 #8/#11)──────────────────────────────
+ *  切断後の再接続猶予のあいだは権威時計を凍結する(pause/resume)。pause すると tick が
+ *  一切進まず、authClock は `nowMs - INPUT_DELAY_MS - pausedOffsetMs` で算出されるため、
+ *  停止していた実時間ぶんだけ権威時刻が過去に留まる。これで制限時間・effect 失効・CD・
+ *  castTime のすべてが停止ぶんオフセットされ、切断側が一時停止で自分の CD 回復や相手 haste
+ *  の失効を稼ぐ悪用を防ぐ(#11)。猶予超過は forfeit で決着させる(#8/#12)。
  * ────────────────────────────────────────────────────────────────────────────
  *
  * アンチチート初歩(ADR 0011 #2 / バランスレビュー):
@@ -117,6 +125,23 @@ export class MatchSession {
   /** 前回 push 時の入力軸シグネチャ(視点別)。デルタ送信要否の判定に使う。 */
   private readonly lastSignature: Record<string, string> = {};
 
+  /**
+   * 累積の一時停止時間(ミリ秒, ラグ補償 B3 / ADR 0011 #8/#11)。
+   *
+   * 切断猶予で試合を一時停止している間、権威時計を凍結するために導入する。authClock は
+   * `nowMs - INPUT_DELAY_MS - pausedOffsetMs` で算出する。停止していた実時間ぶんを nowMs から
+   * 差し引くことで「停止中は権威時刻が一切進まない」=制限時間・effect 失効・castTime・CD の
+   * すべてが停止ぶんだけオフセットされる(ADR 0011 #11)。再開時に停止していた実時間を
+   * ここへ加算する。決定論 replay でも atMs 自体がこのオフセット込みで確定するため再現する。
+   */
+  private pausedOffsetMs = 0;
+
+  /**
+   * 一時停止を開始した実時刻(wall nowMs)。停止中でなければ null。
+   * 再開時にこことの差分を pausedOffsetMs へ加算して権威時計の凍結ぶんを確定する。
+   */
+  private pausedSinceMs: number | null = null;
+
   constructor(engine: MatchEngine, config: MatchConfig) {
     this.engine = engine;
     this.ids = [config.players[0].id, config.players[1].id];
@@ -146,7 +171,7 @@ export class MatchSession {
    * クライアントの入力バッチを「バッファへ積む」だけ(遅延権威 sim, ADR 0011 ラグ補償)。
    *
    * 旧 applyInput と異なり engine へは一切適用しない(snapshot/finished も読まない)。
-   * 各コマンドの atMs を [lastConfirmedAtMs, nowMs] にクランプして権威 atMs を決め
+   * 各コマンドの atMs を [lastConfirmedAtMs, wall] にクランプして権威 atMs を決め
    * (アンチチート, ADR 0011 #2)、buffer へ積むだけ。実適用・KO 評価・時間切れは tick の
    * 遅延権威クロックでのみ起きる。未開始・未知 id・終了後は無視する。
    *
@@ -165,8 +190,11 @@ export class MatchSession {
     if (!this.started || !this.isKnown(playerId) || this.engine.finished) {
       return;
     }
+    // 権威ウォール(停止ぶんを差し引いた現在時刻)を未来クランプの上限に使う。停止中の
+    // 上限は停止開始時点で凍結する(停止中に届いた入力で未来時刻を稼げないようにする)。
+    const wall = this.authWall(nowMs);
     for (const cmd of commands) {
-      const atMs = this.clampAtMs(cmd.atMs, nowMs);
+      const atMs = this.clampAtMs(cmd.atMs, wall);
       // クランプ後の atMs を権威時刻として buffer へ積む(元 cmd の atMs は使わない)。
       this.buffer.push({ playerId, atMs, command: { ...cmd, atMs } });
     }
@@ -174,17 +202,18 @@ export class MatchSession {
 
   /**
    * クライアント主張 atMs を権威 atMs にクランプする(アンチチート, ADR 0011 #2)。
-   * - 非有限は nowMs に倒す。
-   * - 未来(nowMs より先)は nowMs に丸める(先の時刻を主張して deadline を飛び越えさせない)。
+   * - 非有限は wall に倒す。
+   * - 未来(権威ウォール wall より先)は wall に丸める(先の時刻を主張して deadline を飛び越え
+   *   させない)。wall は停止ぶんを差し引いた現在時刻(authWall)で、停止中は凍結する。
    * - 既に確定した時刻(lastConfirmedAtMs より前)は lastConfirmedAtMs に丸める(遅すぎる
    *   入力のペナルティ。tick で既に authClock=T まで適用・確定済みなら、後から届いた T 未満の
    *   入力は T へ寄せて決定論を保つ。等号は許す)。
    * 巻き戻し不可。等号維持(同一 atMs はそのまま)なので相打ち draw 契約を壊さない。
    */
-  private clampAtMs(claimedAtMs: number, nowMs: number): number {
-    let atMs = Number.isFinite(claimedAtMs) ? claimedAtMs : nowMs;
-    if (atMs > nowMs) {
-      atMs = nowMs;
+  private clampAtMs(claimedAtMs: number, wall: number): number {
+    let atMs = Number.isFinite(claimedAtMs) ? claimedAtMs : wall;
+    if (atMs > wall) {
+      atMs = wall;
     }
     if (atMs < this.lastConfirmedAtMs) {
       atMs = this.lastConfirmedAtMs; // 確定済みの過去へは戻せない(等号は維持)。
@@ -195,7 +224,7 @@ export class MatchSession {
   /**
    * 遅延権威クロックを nowMs - INPUT_DELAY_MS へ進め、揃ったバッファ入力を確定する
    * (ラグ補償, ADR 0011)。順序:
-   *   ① authClock = clampMonotonic(nowMs - INPUT_DELAY_MS)(startAtMs 未満にしない・
+   *   ① authClock = clampMonotonic(authWall - INPUT_DELAY_MS)(startAtMs 未満にしない・
    *      lastConfirmedAtMs 以上へ単調)。
    *   ② buffer から atMs <= authClock を全取り出し、(atMs, playerId) 安定ソートして
    *      engine へ順に適用(selectCard / pressKey)。atMs > authClock は次 tick へ残す。
@@ -203,9 +232,14 @@ export class MatchSession {
    *   ④ lastConfirmedAtMs = authClock。
    * これで両者の atMs=T 入力は authClock が T を越える前にバッファへ揃い、ソートで隣接 →
    * 解決前に両方適用 = 厳密な同時撃破も draw(ADR 0010 #16)。終了したか(finished)を返す。
+   *
+   * 一時停止中(切断猶予, ADR 0011 #8/#11)は権威時計を凍結するため tick は何も進めない
+   * (authClock を進めず・入力も確定せず・時間切れ判定もしない)。停止ぶんは resume で
+   * pausedOffsetMs に畳み込まれ、再開後の authClock がその分だけ過去に留まる(deadline /
+   * effect 失効 / CD / castTime のすべてがオフセットされる)。
    */
   tick(nowMs: number): boolean {
-    if (!this.started || this.engine.finished) {
+    if (!this.started || this.engine.finished || this.pausedSinceMs !== null) {
       return this.engine.finished;
     }
     const authClock = this.authClockAt(nowMs);
@@ -243,14 +277,72 @@ export class MatchSession {
   }
 
   /**
-   * 遅延権威クロックを算出する(nowMs - INPUT_DELAY_MS を単調・下限付きで丸める)。
+   * 権威ウォール時刻を算出する(停止ぶんを差し引いた現在時刻, ADR 0011 #11)。
+   * = `nowMs - pausedOffsetMs`。停止中は停止開始時点(pausedSinceMs)で凍結する。
+   * authClock(= authWall - INPUT_DELAY_MS)と未来クランプ上限の共通基準。
+   */
+  private authWall(nowMs: number): number {
+    const wallNow = this.pausedSinceMs ?? nowMs;
+    return wallNow - this.pausedOffsetMs;
+  }
+
+  /**
+   * 遅延権威クロックを算出する(authWall - INPUT_DELAY_MS を単調・下限付きで丸める)。
+   * - 停止ぶん(pausedOffsetMs)を差し引いた authWall 起点で算出する(権威時計の凍結, #11)。
    * - startAtMs 未満にはしない(開始前の deadline 計算 / 負経過を避ける)。
    * - lastConfirmedAtMs 以上へ単調(authClock は決して巻き戻さない)。
    */
   private authClockAt(nowMs: number): number {
     const lowerBound = this.startAtMs ?? 0;
-    const raw = nowMs - INPUT_DELAY_MS;
+    const raw = this.authWall(nowMs) - INPUT_DELAY_MS;
     return Math.max(this.lastConfirmedAtMs, lowerBound, raw);
+  }
+
+  /**
+   * 試合を一時停止する(切断猶予, ADR 0011 #8/#11)。冪等。
+   * 停止開始の実時刻を記録するだけで、権威時計は authWall/authClock が pausedSinceMs で
+   * 凍結することで止まる。停止中は tick が一切進まない(deadline / effect 失効 / CD /
+   * castTime が停止ぶんオフセットされる)。未開始・決着後は無視する。
+   */
+  pause(nowMs: number): void {
+    if (!this.started || this.engine.finished || this.pausedSinceMs !== null) {
+      return;
+    }
+    this.pausedSinceMs = nowMs;
+  }
+
+  /**
+   * 一時停止を解除する(再接続, ADR 0011 #8/#11)。冪等。
+   * 停止していた実時間(nowMs - pausedSinceMs)を pausedOffsetMs へ畳み込み、以後の authWall
+   * がその分だけ過去に留まるようにする(凍結ぶんの権威時計を後ろへずらす)。これで停止中に
+   * 自分の CD 回復や相手 haste の失効を稼ぐ悪用を防ぐ(ADR 0011 #11)。
+   */
+  resume(nowMs: number): void {
+    if (this.pausedSinceMs === null) {
+      return;
+    }
+    // 負の経過(時計巻き戻し)で停止ぶんが減らないよう下限 0。
+    this.pausedOffsetMs += Math.max(0, nowMs - this.pausedSinceMs);
+    this.pausedSinceMs = null;
+  }
+
+  /**
+   * 指定プレイヤーの放棄(forfeit)で決着させる(切断猶予超過, ADR 0011 #8/#12)。
+   * 権威時計(authClock)で engine.forfeit を呼び、相手の win・本人の lose に確定する。
+   * 停止中でも放棄は確定させる(猶予超過の権威イベント)。決着後は engine 側で無視される。
+   * 終了したか(finished)を返す。
+   */
+  forfeit(playerId: string, nowMs: number): boolean {
+    if (!this.started || !this.isKnown(playerId)) {
+      return this.engine.finished;
+    }
+    this.engine.forfeit(playerId, this.authClockAt(nowMs));
+    return this.engine.finished;
+  }
+
+  /** 一時停止中か(切断猶予中, ADR 0011 #8/#11)。 */
+  get paused(): boolean {
+    return this.pausedSinceMs !== null;
   }
 
   /**

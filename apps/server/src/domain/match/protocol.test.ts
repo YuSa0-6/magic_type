@@ -3,11 +3,26 @@ import { parseClientMessage } from './protocol.ts';
 
 describe('parseClientMessage(クライアントメッセージ検証)', () => {
   it('join(code 有/無)を受理する', () => {
-    expect(parseClientMessage({ type: 'join' })).toEqual({ type: 'join', code: undefined });
+    expect(parseClientMessage({ type: 'join' })).toEqual({
+      type: 'join',
+      code: undefined,
+      resumeId: undefined,
+    });
     expect(parseClientMessage({ type: 'join', code: 'ABC123' })).toEqual({
       type: 'join',
       code: 'ABC123',
+      resumeId: undefined,
     });
+  });
+
+  it('join(resumeId つき再接続)を受理する(B3, ADR 0011 #8)', () => {
+    expect(parseClientMessage({ type: 'join', resumeId: 'eph-123' })).toEqual({
+      type: 'join',
+      code: undefined,
+      resumeId: 'eph-123',
+    });
+    // resumeId が文字列以外なら null。
+    expect(parseClientMessage({ type: 'join', resumeId: 42 })).toBeNull();
   });
 
   it('submitDeck は文字列配列のみ受理する', () => {
