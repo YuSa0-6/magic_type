@@ -179,9 +179,23 @@ describe('MatchRoom B2 権威ループ(2 接続シミュレーション)', () =>
     expect(aEnds[0].result.endReason).toBe('ko');
     expect(aEnds[0].outcome).toBe('win');
     expect(bEnds[0].outcome).toBe('lose');
+    // 二重 push 解消(監査 nit): 終了 tick は通常デルタを送らず、最終 state は matchEnd の
+    // 直前(endMatch)に 1 度だけ送られる。各接続で last(matchEnd)の直前が state であること、
+    // かつ matchEnd は丁度 1 通であること(終了一度きり)を確認する。
+    for (const s of [a, b]) {
+      const endIdx = s.sent.findIndex((m) => m.type === 'matchEnd');
+      expect(endIdx).toBeGreaterThan(0);
+      expect(s.sent[endIdx - 1].type).toBe('state'); // 終了直前に最終 state を一本化
+      // matchEnd 以降に state は送られない(終了 tick で通常 push をスキップしている)。
+      expect(s.sent.slice(endIdx).some((m) => m.type === 'state')).toBe(false);
+    }
+    // B 視点の最終 state は self.hp=0(撃破された側)。matchEnd と一貫している。
+    const bStates = b.messagesOfType('state');
+    expect(bStates[bStates.length - 1].payload.self.hp).toBe(0);
     // 終了後はさらに tick を進めても matchEnd は二重送信されない(interval 停止)。
     await vi.advanceTimersByTimeAsync(1000);
     expect(a.messagesOfType('matchEnd')).toHaveLength(1);
+    expect(b.messagesOfType('matchEnd')).toHaveLength(1);
   });
 
   it('終了後 / 未開始の input は無視される', async () => {
@@ -192,5 +206,22 @@ describe('MatchRoom B2 権威ループ(2 接続シミュレーション)', () =>
       a.emitMessage({ type: 'input', commands: castCommands(0, 'wave', 1000) })
     ).not.toThrow();
     expect(room.matchSession).toBeNull();
+  });
+
+  it('全接続が消えると孤立した権威 tick が止まる(空回り防止)', async () => {
+    const { room, a, b } = await startMatch();
+    const session = room.matchSession;
+    if (session === null) throw new Error('session is null');
+    // 開始直後は決着していない(tick が回っている)。
+    expect(session.finished).toBe(false);
+    // 両接続が切れると onClose で tick(setInterval)が止まる。
+    a.close();
+    b.close();
+    // tick が止まっているので、時間を進めても deadline 超過の時間切れ決着が起きない。
+    await vi.advanceTimersByTimeAsync(130_000); // 制限時間(既定 120s)を越える時間
+    expect(session.finished).toBe(false);
+    // ended は決着の不可逆状態であって接続消失とは別物。matchEnd は送られていない。
+    expect(a.messagesOfType('matchEnd')).toHaveLength(0);
+    expect(b.messagesOfType('matchEnd')).toHaveLength(0);
   });
 });
