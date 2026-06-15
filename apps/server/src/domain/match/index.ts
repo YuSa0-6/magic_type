@@ -47,4 +47,4 @@ export {
   type StatePayload,
 } from './protocol.ts';
 
-export { MatchSession, INPUT_DELAY_MS } from './session.ts';
+export { MatchSession, INPUT_DELAY_MS, type MatchSessionDTO } from './session.ts';
