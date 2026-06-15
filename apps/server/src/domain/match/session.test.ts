@@ -378,5 +378,95 @@ describe('MatchSession: アンチチート(atMs クランプ)', () => {
   });
 });
 
+describe('MatchSession: 一時停止と権威時計の凍結(B3, ADR 0011 #8/#11)', () => {
+  it('pause 中は tick が権威時計を進めない(凍結)', () => {
+    const { session } = makeSession({ timeLimitMs: 5000 });
+    session.start(0);
+    // 一度 atMs=1000 を確定して authClock を進めておく。
+    session.applyInput('A', castCommands(0, 'gale', 1000), 100_000);
+    session.tick(confirmAt(1000));
+    expect(session.confirmedAtMs).toBe(1000);
+    // pause 後はどれだけ tick しても confirmedAtMs(権威時計)が進まない。
+    session.pause(confirmAt(1000));
+    session.tick(confirmAt(1000) + 10_000);
+    session.tick(confirmAt(1000) + 50_000);
+    expect(session.paused).toBe(true);
+    expect(session.confirmedAtMs).toBe(1000);
+    // 凍結中は deadline(5000)を実時間で超えても時間切れにならない。
+    expect(session.finished).toBe(false);
+  });
+
+  it('resume 後は停止していた実時間ぶんだけ権威時計がオフセットされる', () => {
+    const { session } = makeSession({ timeLimitMs: 5000 });
+    session.start(0);
+    session.applyInput('A', castCommands(0, 'gale', 1000), 100_000);
+    session.tick(confirmAt(1000)); // confirmedAtMs = 1000
+    // 実時刻 nowMs=2000 で 10_000ms 停止(2000 → 12000)。
+    session.pause(2000);
+    session.resume(12_000); // 停止ぶん 10_000ms を pausedOffset へ畳み込む
+    // 再開直後、実時刻 12000 でも権威ウォールは 12000-10000=2000 相当。
+    // authClock = 2000 - INPUT_DELAY(150) = 1850 → confirmedAtMs まで進む。
+    session.tick(12_000);
+    expect(session.confirmedAtMs).toBe(1850);
+    // 元の deadline(5000)は「停止ぶん 10_000ms 後ろへずれる」ので、実時刻で
+    // 5000 + 10_000 = 15_000 を越える tick で初めて時間切れになる。
+    expect(session.tick(14_000)).toBe(false); // 権威ウォール 4000 < deadline 5000
+    expect(session.finished).toBe(false);
+    expect(session.tick(15_000 + INPUT_DELAY_MS)).toBe(true); // 権威ウォール 5000 >= deadline
+    expect(session.result?.endReason).toBe('timeup');
+  });
+
+  it('凍結中に相手の haste/CD を稼げない(停止ぶんは権威時刻に通算されない)', () => {
+    // gale は CD を生む。pause/resume を挟んでも CD 残りは「停止ぶんを除いた経過」で減る。
+    const { session } = makeSession();
+    session.start(0);
+    session.applyInput('A', castCommands(0, 'gale', 1000), 100_000);
+    session.tick(confirmAt(1000)); // A 発動 → A に CD が乗る
+    const cdAfterCast = session.snapshotFor('A', confirmAt(1000)).timers.selfCooldownRemainingMs;
+    expect(cdAfterCast).toBeGreaterThan(0);
+    // 実時刻で長時間停止しても、停止ぶんは CD 経過に通算されない(凍結, #11)。
+    session.pause(confirmAt(1000));
+    session.resume(confirmAt(1000) + 30_000); // 30s 停止
+    // 再開直後の権威ウォールは停止前と同じなので CD はほぼ据え置き(停止で稼げていない)。
+    session.tick(confirmAt(1000) + 30_000);
+    const cdAfterPause = session.snapshotFor('A', confirmAt(1000) + 30_000).timers
+      .selfCooldownRemainingMs;
+    // 停止が CD 回復に効くなら 0 になっているはず。凍結が効いていれば CD はまだ残っている。
+    expect(cdAfterPause).toBeGreaterThan(0);
+  });
+
+  it('forfeit: 指定プレイヤーの放棄で相手 win・本人 lose に決着する', () => {
+    const { session } = makeSession();
+    session.start(0);
+    expect(session.forfeit('A', 1000)).toBe(true);
+    expect(session.result).toEqual({ winnerId: 'B', endReason: 'forfeit' });
+    expect(session.snapshotFor('A', 1000).outcome).toEqual({
+      kind: 'forfeit',
+      endReason: 'forfeit',
+    });
+    expect(session.snapshotFor('B', 1000).outcome).toEqual({ kind: 'win', endReason: 'forfeit' });
+  });
+
+  it('forfeit: 停止中でも放棄は確定する(猶予超過の権威イベント)', () => {
+    const { session } = makeSession();
+    session.start(0);
+    session.pause(1000);
+    expect(session.forfeit('B', 31_000)).toBe(true);
+    expect(session.result).toEqual({ winnerId: 'A', endReason: 'forfeit' });
+  });
+
+  it('未開始 / 未知 id の pause・forfeit は無視される', () => {
+    const { session } = makeSession();
+    // 未開始では pause/forfeit とも何も起きない。
+    session.pause(1000);
+    expect(session.paused).toBe(false);
+    expect(session.forfeit('A', 1000)).toBe(false);
+    session.start(0);
+    // 未知 id の forfeit は無視(決着しない)。
+    expect(session.forfeit('Z', 1000)).toBe(false);
+    expect(session.finished).toBe(false);
+  });
+});
+
 /** snapshotFor のテストで使う既定制限時間(MATCH_DEFAULT_TIME_LIMIT_MS と同値)。 */
 const MATCH_TIME_DEFAULT = 120_000;

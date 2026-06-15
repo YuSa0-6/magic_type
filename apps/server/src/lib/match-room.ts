@@ -13,7 +13,6 @@
  *    domain の外, ADR 0011 #7/#13)、domain に渡して MatchConfig を構築。
  *  - `new MatchEngine(config.players, config.options)` を DO 内に生成して保持する
  *    (B2 の打鍵権威ループで使う)。両者へ matchStart を送る。
- *  - **打鍵の処理はまだしない(B2)。**
  *
  * B1 はハイバネーション無しでマッチ中メモリ常駐させる(標準 WebSocket API: `accept()` +
  * `addEventListener`)。
@@ -37,6 +36,15 @@
  *  を tick 内で検知したら matchEnd を送って interval を止める(終了判定の権威 = サーバー)。
  *  終了 tick は通常デルタ push をスキップし、最終 state は matchEnd 側に一本化する(二重 push
  *  解消)。代償として権威確定が INPUT_DELAY 遅れるが、自陣はローカル予測(B3)で体感ゼロ。
+ *
+ * ── B3 の実装(切断猶予つき再接続 + 権威時計凍結, ADR 0011 #8/#11)──────────────
+ *  進行中に着席プレイヤーが切断したら、即終了させず権威時計を凍結(session.pause)して
+ *  RECONNECT_GRACE_MS のあいだ再接続を待つ。凍結中は tick が一切進まないため、制限時間・
+ *  effect 失効・CD・castTime が停止ぶんオフセットされる(#11)。猶予超過は切断側の forfeit
+ *  負け(#8/#12)。再接続は join.resumeId(= 元の席のエフェメラル ID)で同じ席へ復帰し、
+ *  matchResumed(seed/self/opponent)+ 現況 state で表示を回復させる。相手へは
+ *  opponentConnection(paused) で切断/再開を通知する。serialize/restore(A3)は単一 DO が
+ *  メモリ常駐で権威状態を保持するため B3 では使わない(将来 DO 退避が必要になれば使う)。
  * ───────────────────────────────────────────────────────────────────────────
  */
 
@@ -61,6 +69,12 @@ import { MatchEngine, type MatchConfig, type MatchOutcome } from '../domain/engi
 /** 約 10Hz(ADR 0008 の表示解像度)= 100ms 周期で権威 tick + デルタ push する。 */
 const TICK_INTERVAL_MS = 100;
 
+/**
+ * 切断後に席を保持して再接続を待つ猶予(ミリ秒, ADR 0011 #8)。
+ * この間は権威時計を凍結(session.pause)し、超過したら切断側の放棄負け(forfeit)にする。
+ */
+const RECONNECT_GRACE_MS = 30_000;
+
 /** DO が参照する環境バインディング(B1 では未使用だが型として用意)。 */
 export interface Env {
   readonly MATCH_ROOM: DurableObjectNamespace;
@@ -69,9 +83,19 @@ export interface Env {
 /** 1 接続の管理単位。エフェメラル ID で席へ紐づく。 */
 interface Connection {
   readonly socket: WebSocket;
+  /** この WS 接続の識別子(接続時に発行)。connections マップのキー。 */
   readonly ephemeralId: string;
-  /** 着席後に確定する role。未着席は null。 */
+  /**
+   * 着席後に確定する role。未着席は null。
+   * 再接続(B3, ADR 0011 #8)では、新しい WS 接続でも既存の席(role)へ復帰する。
+   */
   role: SlotRole | null;
+  /**
+   * 権威エンジン上の playerId(席のエフェメラル ID)。新規着席では ephemeralId と一致するが、
+   * 再接続では「元の席 id」になる(engine の playerId は matchStart 時に固定されるため)。
+   * 入力の権威適用・snapshot 視点解決はこの seatId を使う。未着席は null。
+   */
+  seatId: string | null;
 }
 
 export class MatchRoom implements DurableObject {
@@ -90,10 +114,20 @@ export class MatchRoom implements DurableObject {
   private session: MatchSession | null = null;
   /** role(0/1)→ そのプレイヤーのエフェメラル ID。snapshot 視点解決に使う。 */
   private playerIds: readonly [string, string] | null = null;
+  /** 権威マスター seed(matchStart で生成して保持。再接続時の matchResumed で再配布する)。 */
+  private masterSeed = 0;
   /** 約 100ms の権威 tick(setInterval)。終了で停止し null に戻す(非ハイバネーション常駐)。 */
   private tickHandle: ReturnType<typeof setInterval> | null = null;
   /** matchEnd を二重送信しないためのガード。 */
   private ended = false;
+  /**
+   * 切断猶予タイマ(role → setTimeout ハンドル, ADR 0011 #8)。席が切断されたとき起動し、
+   * RECONNECT_GRACE_MS 以内に再接続が無ければその席の forfeit を確定する。再接続でクリアする。
+   */
+  private graceTimers: [
+    ReturnType<typeof setTimeout> | null,
+    ReturnType<typeof setTimeout> | null,
+  ] = [null, null];
 
   constructor(ctx: DurableObjectState, _env: Env) {
     // DO の id 文字列をルームコード代わりに使う(ルーティングは routes が code → idFromName)。
@@ -118,7 +152,7 @@ export class MatchRoom implements DurableObject {
 
     // 接続時にエフェメラル ID を発行する(ADR 0011 #7)。
     const ephemeralId = crypto.randomUUID();
-    const conn: Connection = { socket: server, ephemeralId, role: null };
+    const conn: Connection = { socket: server, ephemeralId, role: null, seatId: null };
     this.connections.set(ephemeralId, conn);
 
     server.addEventListener('message', (event) => {
@@ -151,7 +185,7 @@ export class MatchRoom implements DurableObject {
   private dispatch(conn: Connection, msg: ClientMessage): void {
     switch (msg.type) {
       case 'join':
-        this.handleJoin(conn);
+        this.handleJoin(conn, msg.resumeId);
         break;
       case 'submitDeck':
         this.handleSubmitDeck(conn, msg.deckIds);
@@ -173,20 +207,33 @@ export class MatchRoom implements DurableObject {
    * engine.finished で弾く(domain 層)。未着席・未開始も無視する。
    */
   private handleInput(conn: Connection, commands: readonly InputCommand[]): void {
-    if (this.ended || conn.role === null || this.session === null || this.playerIds === null) {
+    if (this.ended || conn.seatId === null || this.session === null) {
       return;
     }
-    const playerId = this.playerIds[conn.role];
+    // 権威適用は席 id(engine の playerId)で行う。再接続で WS の ephemeralId が変わっても
+    // seatId は元の席に固定されるため、入力は正しい陣営へ積まれる(ADR 0011 #8)。
     // atMs はサーバー受信時刻でクランプ・単調化する(アンチチート, ADR 0011 #2)。
-    this.session.enqueueInput(playerId, commands, Date.now());
+    this.session.enqueueInput(conn.seatId, commands, Date.now());
   }
 
-  /** join: 空席へ着席して role を返す。満室/開始済みはエラー。 */
-  private handleJoin(conn: Connection): void {
+  /**
+   * join: 空席へ着席して role を返す。満室/開始済みはエラー。
+   * 再接続(B3, ADR 0011 #8): resumeId が開始済みマッチの席に一致すれば、その席へ復帰する
+   * (満室・開始済みでも入室可)。それ以外は通常の新規着席(満室/開始済みは弾く)。
+   */
+  private handleJoin(conn: Connection, resumeId?: string): void {
     if (conn.role !== null) {
       // 二重 join は冪等に再通知する。
       this.send(conn, { type: 'joined', ephemeralId: conn.ephemeralId, role: conn.role });
       return;
+    }
+    // 再接続: 開始済みマッチで、resumeId が在席の席 id に一致するなら席へ復帰する。
+    if (this.session !== null && resumeId !== undefined) {
+      const role = roleOf(this.room, resumeId);
+      if (role !== null) {
+        this.handleReconnect(conn, role, resumeId);
+        return;
+      }
     }
     const result = join(this.room, conn.ephemeralId);
     if (!result.ok) {
@@ -199,10 +246,56 @@ export class MatchRoom implements DurableObject {
       return;
     }
     conn.role = result.value.role;
+    // 新規着席では席 id = この接続の ephemeralId(engine の playerId になる)。
+    conn.seatId = conn.ephemeralId;
     this.room = result.value.state;
     this.send(conn, { type: 'joined', ephemeralId: conn.ephemeralId, role: conn.role });
     // 相手(他席)へ参加を通知する。
     this.broadcastExcept(conn.ephemeralId, { type: 'opponentJoined' });
+  }
+
+  /**
+   * 再接続で席へ復帰する(B3, ADR 0011 #8)。新しい WS 接続を元の席(role / seatId)へ束ね、
+   * 同席の古い接続があれば閉じて差し替える。猶予タイマをクリアし、相手の切断で一時停止して
+   * いた権威時計を再開(session.resume)する。復帰側へ matchResumed(seed/self/opponent)+
+   * 現況 state を配り、相手へは opponentConnection(paused=false)を通知する。
+   */
+  private handleReconnect(conn: Connection, role: SlotRole, seatId: string): void {
+    if (this.session === null || this.playerIds === null) {
+      return;
+    }
+    // 同席の古い接続(切断検知前に残骸が残っている場合)を閉じて置き換える。
+    for (const other of this.connections.values()) {
+      if (other !== conn && other.role === role) {
+        other.role = null;
+        try {
+          other.socket.close(1000, 'replaced by reconnect');
+        } catch {
+          // 既に閉じている等は無視。
+        }
+        this.connections.delete(other.ephemeralId);
+      }
+    }
+    conn.role = role;
+    conn.seatId = seatId;
+
+    // 猶予タイマをクリアし、権威時計を再開する(凍結ぶんは resume でオフセット, #11)。
+    this.clearGraceTimer(role);
+    this.session.resume(Date.now());
+
+    // 復帰側へ初期化情報(seed/self/opponent)+ 現況 state を配って表示を回復させる。
+    const selfId = this.playerIds[role];
+    const opponentId = this.playerIds[role === 0 ? 1 : 0];
+    this.send(conn, { type: 'matchResumed', seed: this.masterSeed, selfId, opponentId });
+    this.send(conn, { type: 'state', payload: this.session.snapshotFor(selfId, Date.now()) });
+
+    // 相手へ「相手が再接続して再開した」を通知する(表示用)。
+    this.broadcastExcept(conn.ephemeralId, { type: 'opponentConnection', paused: false });
+
+    // 凍結を解除したので権威 tick を再開する(決着済みでなければ)。
+    if (!this.ended) {
+      this.startTickLoop();
+    }
   }
 
   /** submitDeck: サーバー検証して席へ記録する。不正は理由付きエラー。 */
@@ -244,6 +337,7 @@ export class MatchRoom implements DurableObject {
   private maybeStart(): void {
     // masterSeed の生成は domain の外(乱数源, ADR 0011 #7/#13)。crypto で 32bit を作る。
     const masterSeed = this.generateMasterSeed();
+    this.masterSeed = masterSeed; // 再接続時の matchResumed 再配布のため保持。
     const result = tryStart(this.room, { masterSeed });
     if (!result.ok) {
       // not_ready: まだ片方だけ。何もせず相手の ready を待つ。
@@ -290,7 +384,8 @@ export class MatchRoom implements DurableObject {
   /**
    * 1 権威 tick。順序契約: tick(揃った入力をソート適用 + 全 drain + 時間切れ + flush)後に
    * デルタ push。終了 tick は通常 push をスキップし、endMatch の最終 snapshot に一本化する
-   * (同一 tick の state 二重 push を解消, 監査 nit)。
+   * (同一 tick の state 二重 push を解消, 監査 nit)。一時停止中(切断猶予)は session.tick が
+   * 何も進めないため、通常デルタも実質止まる(凍結, ADR 0011 #11)。
    */
   private onTick(): void {
     if (this.session === null || this.playerIds === null) {
@@ -335,6 +430,9 @@ export class MatchRoom implements DurableObject {
     }
     this.ended = true;
     this.stopTickLoop();
+    // 決着したら残っている猶予タイマも止める(KO/時間切れ後に forfeit が誤発火しないように)。
+    this.clearGraceTimer(0);
+    this.clearGraceTimer(1);
     const result = this.session.result;
     if (result === null) {
       return;
@@ -374,21 +472,71 @@ export class MatchRoom implements DurableObject {
   }
 
   /**
-   * 切断処理。接続を外す。B1/B2 は再接続猶予(B3)を扱わない。
+   * 切断処理(B3 再接続猶予, ADR 0011 #8/#11)。
    *
-   * 全接続が消えたら孤立した権威 tick(setInterval)を止める。これは「DO がメモリ常駐で
-   * 空回りし続けない」ための解放であって、決着(ended)とは別物: ended=true は試合が権威で
-   * 終わった不可逆状態(matchEnd 送信済み)を表し、ここでは ended は立てない。
+   * - マッチ開始前 / 決着後の切断: 接続を外すだけ(席は room の遷移に任せる)。全接続が消えたら
+   *   孤立した tick を止める(空回り防止)。
+   * - マッチ進行中に着席プレイヤーが切断: 即終了させず、権威時計を凍結(session.pause)して
+   *   猶予 RECONNECT_GRACE_MS のあいだ再接続を待つ。凍結中は tick が一切進まないため、制限時間・
+   *   effect 失効・CD・castTime が停止ぶんオフセットされる(凍結中の悪用防止, #11)。猶予超過で
+   *   切断側の forfeit を確定する。相手へは opponentConnection(paused=true)を通知する。
    *
-   * B3(ADR 0011 #8/#11)の関係: 再接続猶予つきでは「全接続消失 = 即終了」ではなく、
-   * 約 30 秒は権威時計を凍結して再接続を待ち(serialize/restore が土台)、猶予超過で
-   * 切断側の forfeit 負けにする。本実装はその凍結・forfeit を持たないため、tick を止める
-   * だけに留める(席も解放しない)。凍結中の deadline 再スケジュールも B3 で扱う。
+   * onClose は close/error の両方から呼ばれ得るので、既に席を外した接続は冪等に無視する。
    */
   private onClose(conn: Connection): void {
     this.connections.delete(conn.ephemeralId);
+    const role = conn.role;
+    // 進行中(session あり・未決着・着席中)の切断は猶予つき一時停止に入る。
+    if (role !== null && this.session !== null && !this.ended) {
+      this.pauseForReconnect(role);
+      return;
+    }
+    // 開始前 / 決着後 / 未着席: 全接続が消えたら孤立 tick を止める(空回り防止)。
     if (this.connections.size === 0) {
       this.stopTickLoop();
+    }
+  }
+
+  /**
+   * 進行中の席切断で権威時計を凍結し、再接続猶予タイマを起動する(B3, ADR 0011 #8/#11)。
+   * 既にその席の猶予タイマが走っていれば二重起動しない(冪等)。相手へ切断を通知する。
+   */
+  private pauseForReconnect(role: SlotRole): void {
+    if (this.session === null || this.graceTimers[role] !== null) {
+      return;
+    }
+    // 権威時計を凍結する(以後 tick は進まない, #11)。
+    this.session.pause(Date.now());
+    // 相手へ「相手が切断して一時停止中」を通知する(表示用)。
+    this.broadcastToRole(role === 0 ? 1 : 0, { type: 'opponentConnection', paused: true });
+    // 猶予超過で切断側の放棄負けを確定する。
+    this.graceTimers[role] = setTimeout(() => {
+      this.graceTimers[role] = null;
+      this.forfeitSeat(role);
+    }, RECONNECT_GRACE_MS);
+  }
+
+  /**
+   * 切断猶予を超過した席を放棄負け(forfeit)で決着させる(B3, ADR 0011 #8/#12)。
+   * 凍結中の権威時計で engine.forfeit を呼び(相手の win)、endMatch で matchEnd を配る。
+   */
+  private forfeitSeat(role: SlotRole): void {
+    if (this.session === null || this.playerIds === null || this.ended) {
+      return;
+    }
+    const now = Date.now();
+    const finished = this.session.forfeit(this.playerIds[role], now);
+    if (finished) {
+      this.endMatch(now);
+    }
+  }
+
+  /** 指定 role の猶予タイマがあれば止めてクリアする(再接続・終了時)。 */
+  private clearGraceTimer(role: SlotRole): void {
+    const handle = this.graceTimers[role];
+    if (handle !== null) {
+      clearTimeout(handle);
+      this.graceTimers[role] = null;
     }
   }
 
@@ -405,6 +553,15 @@ export class MatchRoom implements DurableObject {
   private broadcastExcept(exceptId: string, msg: ServerMessage): void {
     for (const conn of this.connections.values()) {
       if (conn.ephemeralId !== exceptId && conn.role !== null) {
+        this.send(conn, msg);
+      }
+    }
+  }
+
+  /** 指定 role の(在席している)接続へ送る(切断/再接続の相手通知用, B3)。 */
+  private broadcastToRole(role: SlotRole, msg: ServerMessage): void {
+    for (const conn of this.connections.values()) {
+      if (conn.role === role) {
         this.send(conn, msg);
       }
     }

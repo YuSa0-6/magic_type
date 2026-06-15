@@ -208,20 +208,67 @@ describe('MatchRoom B2 権威ループ(2 接続シミュレーション)', () =>
     expect(room.matchSession).toBeNull();
   });
 
-  it('全接続が消えると孤立した権威 tick が止まる(空回り防止)', async () => {
+  it('進行中の切断は権威時計を凍結し、相手へ切断通知(B3, ADR 0011 #8/#11)', async () => {
     const { room, a, b } = await startMatch();
     const session = room.matchSession;
     if (session === null) throw new Error('session is null');
-    // 開始直後は決着していない(tick が回っている)。
-    expect(session.finished).toBe(false);
-    // 両接続が切れると onClose で tick(setInterval)が止まる。
+    expect(session.paused).toBe(false);
+    // A(role 0)が切断 → 権威時計が凍結し、B(相手)へ paused=true が届く。
     a.close();
-    b.close();
-    // tick が止まっているので、時間を進めても deadline 超過の時間切れ決着が起きない。
-    await vi.advanceTimersByTimeAsync(130_000); // 制限時間(既定 120s)を越える時間
+    expect(session.paused).toBe(true);
+    const oppConn = b.messagesOfType('opponentConnection');
+    expect(oppConn[oppConn.length - 1].paused).toBe(true);
+    // 猶予内(30s 未満)は決着しない(凍結中は forfeit が走らない)。
+    await vi.advanceTimersByTimeAsync(20_000);
     expect(session.finished).toBe(false);
-    // ended は決着の不可逆状態であって接続消失とは別物。matchEnd は送られていない。
-    expect(a.messagesOfType('matchEnd')).toHaveLength(0);
     expect(b.messagesOfType('matchEnd')).toHaveLength(0);
+  });
+
+  it('切断猶予を超過すると切断側の forfeit 負けで matchEnd(B3, ADR 0011 #8/#12)', async () => {
+    const { room, a, b } = await startMatch();
+    const session = room.matchSession;
+    if (session === null) throw new Error('session is null');
+    // A が切断したまま猶予(30s)を超過 → A の forfeit、B の win。
+    a.close();
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(session.finished).toBe(true);
+    expect(session.result?.endReason).toBe('forfeit');
+    // 在席の B へ matchEnd(win)が届く(切断済みの A へは送れないが二重決着しない)。
+    const bEnds = b.messagesOfType('matchEnd');
+    expect(bEnds).toHaveLength(1);
+    expect(bEnds[0].outcome).toBe('win');
+    expect(bEnds[0].result.endReason).toBe('forfeit');
+  });
+
+  it('猶予内に再接続すると席へ復帰し権威時計が再開する(B3, ADR 0011 #8/#11)', async () => {
+    const { room, a, b } = await startMatch();
+    const session = room.matchSession;
+    if (session === null) throw new Error('session is null');
+    // A の元の席 id(engine の playerId)= matchStart の selfId。
+    const aSeatId = a.messagesOfType('matchStart')[0].selfId;
+    // A が切断 → 凍結。
+    a.close();
+    expect(session.paused).toBe(true);
+    await vi.advanceTimersByTimeAsync(10_000); // 猶予内
+    // A が resumeId 付きで再接続 → 席復帰 → 凍結解除。
+    const a2 = await connect(room);
+    a2.emitMessage({ type: 'join', resumeId: aSeatId });
+    expect(session.paused).toBe(false);
+    // 復帰側へ matchResumed(seed/self/opponent)+ 現況 state が届く。
+    const resumed = a2.messagesOfType('matchResumed');
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0].selfId).toBe(aSeatId);
+    expect(a2.messagesOfType('state').length).toBeGreaterThan(0);
+    // 相手 B へ paused=false(再開)が届く。
+    const oppConn = b.messagesOfType('opponentConnection');
+    expect(oppConn[oppConn.length - 1].paused).toBe(false);
+    // 復帰後の入力が正しい陣営(A の席)へ通る: A が詠唱すると B が被弾する。
+    const handCardId = session.snapshotFor(aSeatId, Date.now()).self.hand[0].id;
+    a2.emitMessage({ type: 'input', commands: castCommands(0, handCardId, Date.now()) });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(session.snapshotFor(aSeatId, Date.now()).opponent.hp).toBeLessThan(80);
+    // 猶予を超過しても決着しない(再接続でタイマがクリアされている)。
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(session.result?.endReason).not.toBe('forfeit');
   });
 });
