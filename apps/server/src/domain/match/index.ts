@@ -38,4 +38,13 @@ export {
   type StartOptions,
 } from './room.ts';
 
-export { parseClientMessage, type ClientMessage, type ServerMessage } from './protocol.ts';
+export {
+  parseClientMessage,
+  type ClientMessage,
+  type ServerMessage,
+  type ServerOutcome,
+  type InputCommand,
+  type StatePayload,
+} from './protocol.ts';
+
+export { MatchSession } from './session.ts';
