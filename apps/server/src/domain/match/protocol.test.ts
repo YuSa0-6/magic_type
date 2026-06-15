@@ -23,6 +23,49 @@ describe('parseClientMessage(クライアントメッセージ検証)', () => {
     expect(parseClientMessage({ type: 'ready' })).toEqual({ type: 'ready' });
   });
 
+  it('input(select / press の混在バッチ)を受理する', () => {
+    const commands = [
+      { kind: 'select', handIndex: 2, atMs: 100 },
+      { kind: 'press', key: 'k', atMs: 110 },
+    ];
+    expect(parseClientMessage({ type: 'input', commands })).toEqual({ type: 'input', commands });
+  });
+
+  it('input の commands が配列でない / 要素が不正なら null', () => {
+    expect(parseClientMessage({ type: 'input' })).toBeNull();
+    expect(parseClientMessage({ type: 'input', commands: 'x' })).toBeNull();
+    // atMs 欠落
+    expect(
+      parseClientMessage({ type: 'input', commands: [{ kind: 'press', key: 'k' }] })
+    ).toBeNull();
+    // 未知 kind
+    expect(
+      parseClientMessage({ type: 'input', commands: [{ kind: 'attack', atMs: 1 }] })
+    ).toBeNull();
+    // select の handIndex が非整数
+    expect(
+      parseClientMessage({ type: 'input', commands: [{ kind: 'select', handIndex: 1.5, atMs: 1 }] })
+    ).toBeNull();
+    // press の key が文字列でない
+    expect(
+      parseClientMessage({ type: 'input', commands: [{ kind: 'press', key: 9, atMs: 1 }] })
+    ).toBeNull();
+    // atMs が非有限
+    expect(
+      parseClientMessage({
+        type: 'input',
+        commands: [{ kind: 'press', key: 'k', atMs: Infinity }],
+      })
+    ).toBeNull();
+  });
+
+  it('input の空 commands は受理する(空バッチは合法)', () => {
+    expect(parseClientMessage({ type: 'input', commands: [] })).toEqual({
+      type: 'input',
+      commands: [],
+    });
+  });
+
   it('未知 type / 非オブジェクト / null は null', () => {
     expect(parseClientMessage({ type: 'attack' })).toBeNull();
     expect(parseClientMessage('ready')).toBeNull();
