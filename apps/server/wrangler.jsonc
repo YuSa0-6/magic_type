@@ -17,4 +17,11 @@
     // /api/* は Assets より先に Worker(Hono)へ流す。それ以外は静的配信が優先。
     "run_worker_first": ["/api/*"],
   },
+  // 対戦ルーム = 1 マッチ 1 Durable Object(ADR 0011 #5)。ルームコードを idFromName に使い、
+  // 同じコードは同じ DO(= 同じルーム)へ解決される。WS 接続を受けて権威状態を保持する。
+  "durable_objects": {
+    "bindings": [{ "name": "MATCH_ROOM", "class_name": "MatchRoom" }],
+  },
+  // DO クラスの作成マイグレーション。SQLite ストレージ backend で作成する。
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MatchRoom"] }],
 }
