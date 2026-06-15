@@ -43,8 +43,28 @@
  *  effect 失効・CD・castTime が停止ぶんオフセットされる(#11)。猶予超過は切断側の forfeit
  *  負け(#8/#12)。再接続は join.resumeId(= 元の席のエフェメラル ID)で同じ席へ復帰し、
  *  matchResumed(seed/self/opponent)+ 現況 state で表示を回復させる。相手へは
- *  opponentConnection(paused) で切断/再開を通知する。serialize/restore(A3)は単一 DO が
- *  メモリ常駐で権威状態を保持するため B3 では使わない(将来 DO 退避が必要になれば使う)。
+ *  opponentConnection(paused) で切断/再開を通知する。
+ *
+ * ── DO Storage 永続化 + Alarms 堅牢化(ADR 0012)────────────────────────────────
+ *  B1〜B3 は「単一 DO がメモリ常駐で権威状態を保持する」前提だったが、DO は退避・再起動・
+ *  クラッシュで揮発する。これを A3(MatchEngine.serialize/restore)と provisioned 済み SQLite
+ *  を活かして塞ぐ(アクティブ対戦の挙動・ゲームルールは変えない、追加的な堅牢化のみ)。
+ *
+ *  (A) 試合状態を ctx.storage へチェックポイント永続化する。保存対象は MatchConfig +
+ *      MatchEngine.serialize() の DTO + MatchSession の権威クロック DTO + room/席の権威状態
+ *      (PersistedMatchState を 1 キーへまとめて put)。書き込み契機は 10Hz 毎を避け、matchStart /
+ *      意味的に変わった tick(発動 / KO / 効果適用=シグネチャ変化)/ pause / resume /
+ *      reconnect。matchEnd では永続データを削除して掃除する。起動時(constructor の
+ *      blockConcurrencyWhile)に storage から読み、あれば MatchEngine.restore → MatchSession.restore
+ *      → room/席の権威状態を復帰し、WS が来たら現況 state を配る。これで DO 退避後も試合継続。
+ *  (B) 猶予 forfeit(#8)と 制限時間 deadline(#10)を ctx.storage.setAlarm で予約し alarm() で
+ *      発火する。DO が退避中でも発火するので「無通信で時間切れ / 猶予超過しても正しく決着」。
+ *      alarm は単一時刻なので「現在有効な最も早い deadline」(切断中なら壁時計の grace 期限、
+ *      通常は時間切れ deadline を実時間へ換算したもの)を持ち、状態変化で再スケジュールする。
+ *      アクティブ対戦中の 10Hz tick は setInterval のまま(alarm は退避時 / 疎イベントの
+ *      バックストップ)。pause で権威時計が凍結するので、時間切れ alarm も pause 中は予約せず
+ *      (grace のみ)、resume で再スケジュールする(凍結中に旧 deadline で誤発火しない)。
+ *  WebSocket Hibernation(C)・D1/KV(D)は範囲外(別途)。
  * ───────────────────────────────────────────────────────────────────────────
  */
 
@@ -59,12 +79,18 @@ import {
   tryStart,
   type ClientMessage,
   type InputCommand,
+  type MatchSessionDTO,
   type RoomState,
   type ServerMessage,
   type ServerOutcome,
   type SlotRole,
 } from '../domain/match/index.ts';
-import { MatchEngine, type MatchConfig, type MatchOutcome } from '../domain/engine/index.ts';
+import {
+  MatchEngine,
+  type MatchConfig,
+  type MatchOutcome,
+  type MatchStateDTO,
+} from '../domain/engine/index.ts';
 
 /** 約 10Hz(ADR 0008 の表示解像度)= 100ms 周期で権威 tick + デルタ push する。 */
 const TICK_INTERVAL_MS = 100;
@@ -78,6 +104,39 @@ const RECONNECT_GRACE_MS = 30_000;
 /** DO が参照する環境バインディング(B1 では未使用だが型として用意)。 */
 export interface Env {
   readonly MATCH_ROOM: DurableObjectNamespace;
+}
+
+/**
+ * ctx.storage の単一チェックポイントキー(ADR 0012)。試合状態を 1 キーへまとめて
+ * `put` することで「部分的に書けて壊れた状態」を避け、起動時に 1 度 `get` で復元する。
+ */
+const MATCH_STATE_KEY = 'match';
+
+/**
+ * DO storage へ永続化する試合状態(ADR 0012)。WS 接続自体は揮発なので保存しない
+ * (再接続で配り直す)。これだけあれば DO 退避・再起動・クラッシュ後に MatchEngine /
+ * MatchSession を再構築し、room/席の権威状態を復帰できる。
+ */
+interface PersistedMatchState {
+  /** 不変構成(players の id + deck、options{masterSeed,maxHp,timeLimitMs})。restore の初期条件。 */
+  readonly config: MatchConfig;
+  /** MatchEngine の全状態 DTO(両 side + 進行軸 + rng 消費位置)。 */
+  readonly engine: MatchStateDTO;
+  /** MatchSession の権威クロック状態(authClock / pausedOffset / 入力バッファ)。 */
+  readonly session: MatchSessionDTO;
+  /** ルームの権威状態(phase・各 slot の ephemeralId/deck/ready)。 */
+  readonly room: RoomState;
+  /** role 0 / 1 の席 id(engine の playerId)。matchResumed / 視点解決に使う。 */
+  readonly playerIds: readonly [string, string];
+  /** 権威マスター seed(matchResumed 再配布用)。 */
+  readonly masterSeed: number;
+  /** 決着済みか(決着後に退避→復元しても二重決着しないためのガード)。 */
+  readonly ended: boolean;
+  /**
+   * 各 role の切断猶予 deadline(壁時計 ms, ADR 0011 #8 / 0012)。切断中でなければ null。
+   * alarm はこの壁時計時刻で forfeit を発火する(DO 退避中でも猶予超過を正しく決着させる)。
+   */
+  readonly graceDeadlines: readonly [number | null, number | null];
 }
 
 /** 1 接続の管理単位。エフェメラル ID で席へ紐づく。 */
@@ -121,17 +180,49 @@ export class MatchRoom implements DurableObject {
   /** matchEnd を二重送信しないためのガード。 */
   private ended = false;
   /**
-   * 切断猶予タイマ(role → setTimeout ハンドル, ADR 0011 #8)。席が切断されたとき起動し、
-   * RECONNECT_GRACE_MS 以内に再接続が無ければその席の forfeit を確定する。再接続でクリアする。
+   * 各 role の切断猶予 deadline(壁時計 ms, ADR 0011 #8 / 0012)。席が切断されたとき
+   * `Date.now() + RECONNECT_GRACE_MS` を立て、ctx.storage の alarm がこの時刻で forfeit を
+   * 発火する(DO 退避中でも猶予超過を正しく決着させる)。切断中でなければ null。再接続でクリア。
+   */
+  private graceDeadlines: [number | null, number | null] = [null, null];
+  /**
+   * 各 role の切断猶予タイマ(role → setTimeout, ADR 0011 #8)。DO がメモリ常駐している間の
+   * ライブ fast-path。退避時は失われるが、graceDeadlines + alarm がバックストップになる
+   * (両者とも forfeit は冪等なので二重発火しても安全, ADR 0012)。再接続・終了でクリアする。
    */
   private graceTimers: [
     ReturnType<typeof setTimeout> | null,
     ReturnType<typeof setTimeout> | null,
   ] = [null, null];
 
+  /** DO の永続ストレージと alarm を扱う(ADR 0012)。constructor で受け取り保持する。 */
+  private readonly storage: DurableObjectStorage;
+  /**
+   * マッチの不変構成(restore / 再 serialize のため保持, ADR 0012)。開始前は null。
+   * `MatchEngine.restore(config, dto)` / `MatchSession.restore` の初期条件であり、
+   * checkpoint の `config` フィールドにもそのまま載せる。
+   */
+  private config: MatchConfig | null = null;
+  /**
+   * 直近に checkpoint した権威スナップショットシグネチャ(ADR 0012)。10Hz の全 tick で
+   * storage へ書くのを避け、これと差分があった tick(発動 / KO / 効果適用)だけ書く。
+   */
+  private lastPersistedSignature: string | null = null;
+  /**
+   * 復元(restore)済みの起動か(テスト/将来用)。constructor の blockConcurrencyWhile で
+   * storage に既存試合があれば true。新規ルームは false。
+   */
+  private restored = false;
+
   constructor(ctx: DurableObjectState, _env: Env) {
+    this.storage = ctx.storage;
     // DO の id 文字列をルームコード代わりに使う(ルーティングは routes が code → idFromName)。
     this.room = createRoom(ctx.id.toString());
+    // DO 退避・再起動・クラッシュ後でも試合を継続できるよう、起動時に storage から復元する
+    // (ADR 0012)。blockConcurrencyWhile でロード完了まで他の I/O(fetch/alarm)を待たせる。
+    ctx.blockConcurrencyWhile(async () => {
+      await this.restoreFromStorage();
+    });
   }
 
   /**
@@ -296,6 +387,11 @@ export class MatchRoom implements DurableObject {
     if (!this.ended) {
       this.startTickLoop();
     }
+
+    // 再開した権威時計を checkpoint し、alarm を張り替える(ADR 0012)。猶予 deadline は
+    // クリア済みなので、resume 後は時間切れ deadline を実時間へ換算して再予約する(pause 追従)。
+    void this.persist();
+    void this.rescheduleAlarm();
   }
 
   /** submitDeck: サーバー検証して席へ記録する。不正は理由付きエラー。 */
@@ -347,8 +443,9 @@ export class MatchRoom implements DurableObject {
     const { config, playerIds } = result.value;
 
     // 権威エンジン + コーディネータを DO 内に生成して保持する(B2 の打鍵権威ループ)。
-    this.engine = new MatchEngine(config.players, config.options);
     const matchConfig: MatchConfig = { players: config.players, options: config.options };
+    this.config = matchConfig; // restore / 再 serialize / checkpoint のため保持(ADR 0012)。
+    this.engine = new MatchEngine(config.players, config.options);
     this.session = new MatchSession(this.engine, matchConfig);
     this.playerIds = playerIds;
 
@@ -367,6 +464,10 @@ export class MatchRoom implements DurableObject {
     // (終了専用 alarm でも可だが、表示 tick と相乗りできる, ADR 0008/0011 #10)。
     this.session.start(Date.now());
     this.startTickLoop();
+
+    // matchStart 時に試合状態を checkpoint し、時間切れ alarm を予約する(ADR 0012)。
+    void this.persist();
+    void this.rescheduleAlarm();
   }
 
   /**
@@ -400,6 +501,9 @@ export class MatchRoom implements DurableObject {
     }
     // tick の確定後に各視点のデルタを push する(順序契約: 読みは flush 後, ADR 0010 #14)。
     this.pushDeltas(now);
+    // 意味的に変わった tick(発動 / KO / 効果適用=シグネチャ変化)だけ checkpoint する
+    // (10Hz 全 tick の storage I/O を避ける, ADR 0012)。
+    this.persistIfChanged();
   }
 
   /** 両者へ視点別の state デルタを push する(変化が無い視点は送らない, 10Hz)。 */
@@ -430,7 +534,7 @@ export class MatchRoom implements DurableObject {
     }
     this.ended = true;
     this.stopTickLoop();
-    // 決着したら残っている猶予タイマも止める(KO/時間切れ後に forfeit が誤発火しないように)。
+    // 決着したら残っている猶予 deadline も外す(KO/時間切れ後に forfeit が誤発火しないように)。
     this.clearGraceTimer(0);
     this.clearGraceTimer(1);
     const result = this.session.result;
@@ -451,6 +555,8 @@ export class MatchRoom implements DurableObject {
         result: { winnerId: result.winnerId, endReason: result.endReason },
       });
     }
+    // 決着したら永続データを削除して掃除し、予約済み alarm も外す(ADR 0012)。
+    void this.cleanupStorage();
   }
 
   /** 権威 tick ループを止める(終了・接続消失時)。 */
@@ -469,6 +575,172 @@ export class MatchRoom implements DurableObject {
     const buf = new Uint32Array(1);
     crypto.getRandomValues(buf);
     return buf[0] | 0;
+  }
+
+  // ── DO Storage 永続化 + Alarms 堅牢化(ADR 0012)──────────────────────────────
+
+  /**
+   * 起動時(constructor の blockConcurrencyWhile)に storage から試合状態を復元する(ADR 0012)。
+   *
+   * 永続データがあれば MatchEngine.restore → MatchSession.restore で権威状態を再構築し、
+   * room / 席の権威状態(playerIds / masterSeed / ended / graceDeadlines)を復帰する。これで
+   * DO 退避・再起動・クラッシュ後も試合を継続できる(WS は揮発なので接続が来たら現況 state を
+   * 配り直す)。決着済み(ended)なら掃除だけして何も持たない(二重決着防止)。
+   *
+   * 復元後は「進行中(非 pause・非 ended)なら tick を再開」「pause 中なら tick は止めたまま
+   * alarm / reconnect に委ねる」。退避中に経過した実時間ぶんは alarm() が現況再評価で吸収する。
+   */
+  private async restoreFromStorage(): Promise<void> {
+    const persisted = await this.storage.get<PersistedMatchState>(MATCH_STATE_KEY);
+    if (persisted === undefined) {
+      return;
+    }
+    if (persisted.ended) {
+      // 決着済みの残骸は復元せず掃除する(二重決着防止, ADR 0012)。
+      await this.cleanupStorage();
+      return;
+    }
+    this.config = persisted.config;
+    this.engine = MatchEngine.restore(persisted.config, persisted.engine);
+    this.session = MatchSession.restore(this.engine, persisted.config, persisted.session);
+    this.room = persisted.room;
+    this.playerIds = persisted.playerIds;
+    this.masterSeed = persisted.masterSeed;
+    this.ended = persisted.ended;
+    this.graceDeadlines = [persisted.graceDeadlines[0], persisted.graceDeadlines[1]];
+    this.lastPersistedSignature = this.session.stateSignature();
+    this.restored = true;
+
+    // 進行中(凍結していない)なら権威 tick を再開する。pause 中(切断猶予中)は tick を
+    // 止めたまま alarm / reconnect に委ねる(凍結中に旧 deadline で誤発火しない, #11)。
+    if (!this.session.paused) {
+      this.startTickLoop();
+    }
+    // 退避中に猶予 / 時間切れ deadline を跨いだ可能性があるので alarm を張り直す(ADR 0012)。
+    await this.rescheduleAlarm();
+  }
+
+  /**
+   * 現在の試合状態を storage へ checkpoint する(ADR 0012)。1 キーへまとめて put することで
+   * 部分書き込みで壊れた状態を避ける。開始前 / 復元前(config・session・engine 未確定)は
+   * 何もしない。lastPersistedSignature を最新へ更新する(persistIfChanged の差分基準)。
+   */
+  private async persist(): Promise<void> {
+    if (this.engine === null || this.session === null || this.config === null) {
+      return;
+    }
+    if (this.playerIds === null) {
+      return;
+    }
+    const state: PersistedMatchState = {
+      config: this.config,
+      engine: this.engine.serialize(),
+      session: this.session.serialize(),
+      room: this.room,
+      playerIds: this.playerIds,
+      masterSeed: this.masterSeed,
+      ended: this.ended,
+      graceDeadlines: [this.graceDeadlines[0], this.graceDeadlines[1]],
+    };
+    this.lastPersistedSignature = this.session.stateSignature();
+    await this.storage.put(MATCH_STATE_KEY, state);
+  }
+
+  /**
+   * 権威スナップショットシグネチャが前回 checkpoint から変わっていれば checkpoint する
+   * (ADR 0012 の「意味的に変わった tick だけ書く」)。10Hz の全 tick で storage I/O を
+   * 起こさず、発動 / KO / 効果適用でシグネチャが変化したときだけ書く。
+   */
+  private persistIfChanged(): void {
+    if (this.session === null) {
+      return;
+    }
+    const signature = this.session.stateSignature();
+    if (signature === this.lastPersistedSignature) {
+      return;
+    }
+    void this.persist();
+  }
+
+  /**
+   * 決着 / 復元不要時に永続データと予約済み alarm を掃除する(ADR 0012)。matchEnd 後に呼ぶ。
+   */
+  private async cleanupStorage(): Promise<void> {
+    await this.storage.delete(MATCH_STATE_KEY);
+    await this.storage.deleteAlarm();
+  }
+
+  /**
+   * 現在有効な「最も早い deadline」を 1 つの alarm へ予約し直す(ADR 0012, alarm は単一時刻)。
+   *
+   * 候補(壁時計 ms):
+   *  - 各 role の切断猶予 deadline(graceDeadlines, 切断中のみ)。
+   *  - 時間切れ deadline を実時間へ換算したもの(session.timeLimitDeadlineWallMs)。pause 中は
+   *    null(凍結)なので時間切れ alarm は予約せず、猶予 deadline だけが残る(#11 の追従)。
+   * 候補が無ければ alarm を削除する。決着済みは予約しない。
+   */
+  private async rescheduleAlarm(): Promise<void> {
+    if (this.ended || this.session === null) {
+      await this.storage.deleteAlarm();
+      return;
+    }
+    const candidates: number[] = [];
+    for (const deadline of this.graceDeadlines) {
+      if (deadline !== null) {
+        candidates.push(deadline);
+      }
+    }
+    const timeUp = this.session.timeLimitDeadlineWallMs();
+    if (timeUp !== null) {
+      candidates.push(timeUp);
+    }
+    if (candidates.length === 0) {
+      await this.storage.deleteAlarm();
+      return;
+    }
+    await this.storage.setAlarm(Math.min(...candidates));
+  }
+
+  /**
+   * alarm() ハンドラ(ADR 0012)。DO が退避中でも発火する終了系イベントのバックストップ。
+   *
+   * 発火時に現況を再評価する:
+   *  ① 切断猶予を超過した role(graceDeadline <= now)があれば forfeit で決着。
+   *  ② 一時停止していなければ tick を 1 回回して時間切れ deadline を権威評価(finished で endMatch)。
+   * いずれも冪等(engine は決着後に無視、ended ガード)。決着しなければ次の最も早い deadline へ
+   * alarm を張り直す。setInterval の tick が生きている常駐 DO でも二重発火は無害(冪等)。
+   */
+  async alarm(): Promise<void> {
+    if (this.ended || this.session === null || this.playerIds === null) {
+      return;
+    }
+    const now = Date.now();
+
+    // ① 猶予超過の forfeit(切断中の role で deadline 到来)。
+    for (const role of [0, 1] as const) {
+      const deadline = this.graceDeadlines[role];
+      if (deadline !== null && now >= deadline) {
+        this.forfeitSeat(role);
+        if (this.ended) {
+          return; // endMatch が cleanupStorage 済み。
+        }
+      }
+    }
+
+    // ② 時間切れ deadline の権威評価(凍結中は tick が進めないのでスキップ)。
+    if (!this.session.paused) {
+      const finished = this.session.tick(now);
+      if (finished) {
+        this.endMatch(now);
+        return;
+      }
+      // 時間切れに達していなければ最新状態を push して checkpoint(疎イベントの巻き取り)。
+      this.pushDeltas(now);
+      this.persistIfChanged();
+    }
+
+    // 決着しなかったので次の最も早い deadline へ alarm を張り直す(ADR 0012)。
+    await this.rescheduleAlarm();
   }
 
   /**
@@ -500,20 +772,30 @@ export class MatchRoom implements DurableObject {
   /**
    * 進行中の席切断で権威時計を凍結し、再接続猶予タイマを起動する(B3, ADR 0011 #8/#11)。
    * 既にその席の猶予タイマが走っていれば二重起動しない(冪等)。相手へ切断を通知する。
+   *
+   * 猶予 deadline(壁時計)を立てて checkpoint + alarm を再スケジュールする(ADR 0012)。
+   * これで DO が退避しても alarm が猶予超過で forfeit を発火する。ライブ fast-path として
+   * setTimeout も併用するが、両者とも forfeit は冪等なので二重発火しても安全。
    */
   private pauseForReconnect(role: SlotRole): void {
     if (this.session === null || this.graceTimers[role] !== null) {
       return;
     }
+    const now = Date.now();
     // 権威時計を凍結する(以後 tick は進まない, #11)。
-    this.session.pause(Date.now());
+    this.session.pause(now);
+    // 猶予 deadline(壁時計)を立てる。alarm はこの時刻で forfeit を発火する(ADR 0012)。
+    this.graceDeadlines[role] = now + RECONNECT_GRACE_MS;
     // 相手へ「相手が切断して一時停止中」を通知する(表示用)。
     this.broadcastToRole(role === 0 ? 1 : 0, { type: 'opponentConnection', paused: true });
-    // 猶予超過で切断側の放棄負けを確定する。
+    // ライブ fast-path: メモリ常駐中は setTimeout で猶予超過 → 切断側の放棄負けを確定する。
     this.graceTimers[role] = setTimeout(() => {
       this.graceTimers[role] = null;
       this.forfeitSeat(role);
     }, RECONNECT_GRACE_MS);
+    // 凍結・猶予 deadline を checkpoint し、alarm を最も早い deadline へ張り替える(ADR 0012)。
+    void this.persist();
+    void this.rescheduleAlarm();
   }
 
   /**
@@ -525,19 +807,23 @@ export class MatchRoom implements DurableObject {
       return;
     }
     const now = Date.now();
+    // この席の猶予 deadline は役目を終えた(超過確定)。alarm 再武装で残らないようクリアする。
+    this.graceDeadlines[role] = null;
     const finished = this.session.forfeit(this.playerIds[role], now);
     if (finished) {
+      // endMatch が cleanupStorage で永続データと alarm を掃除する(ADR 0012)。
       this.endMatch(now);
     }
   }
 
-  /** 指定 role の猶予タイマがあれば止めてクリアする(再接続・終了時)。 */
+  /** 指定 role の猶予タイマ・猶予 deadline があれば止めてクリアする(再接続・終了時)。 */
   private clearGraceTimer(role: SlotRole): void {
     const handle = this.graceTimers[role];
     if (handle !== null) {
       clearTimeout(handle);
       this.graceTimers[role] = null;
     }
+    this.graceDeadlines[role] = null;
   }
 
   /** 1 接続へ JSON メッセージを送る。閉じた接続は無視する。 */
@@ -588,6 +874,11 @@ export class MatchRoom implements DurableObject {
   /** マッチ開始後の権威ループ・コーディネータ(開始前は null)。テスト/将来用。 */
   get matchSession(): MatchSession | null {
     return this.session;
+  }
+
+  /** storage から復元して起動したか(ADR 0012)。新規ルームは false。テスト/将来用。 */
+  get wasRestored(): boolean {
+    return this.restored;
   }
 }
 
