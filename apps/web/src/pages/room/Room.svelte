@@ -38,6 +38,14 @@
   // 効果音のミュート状態(ADR 0002: 状態は親が sound モジュール経由で保持し props で渡す)。
   let muted = $state(sound.isMuted());
 
+  // 盤面結果音(被弾/防御=自陣 / 命中=相手)検出用の前値トラッカー(ADR 0012 の盤面結果節)。
+  // 非リアクティブな plain let。差分は transport.authState(HP/シールドの唯一の権威源)に対して
+  // 取る(下の盤面結果 $effect)。null は未観測の番兵で、最初の観測ではベースライン設定のみ。
+  // initPredictor(matchStart/matchResumed)で null に戻す(再接続後は最初の権威 state が基準)。
+  let prevSelfHp: number | null = null;
+  let prevSelfShield: number | null = null;
+  let prevOppHp: number | null = null;
+
   // ミュートトグル。状態は sound モジュールが正(localStorage 永続)。
   function handleToggleMute(): void {
     sound.toggleMute();
@@ -90,6 +98,11 @@
     predictor = new SelfPredictor(start.seed, role, start.selfId, resolveDeck(selfDeckIds()));
     predictor.start(now());
     prediction = predictor.snapshot();
+    // 盤面結果音の前値をベースラインし直す(ADR 0012)。再接続(matchResumed)時は次の権威
+    // state の途中 HP を初回観測としてベースラインするため、切断中の被弾を音で再生しない。
+    prevSelfHp = null;
+    prevSelfShield = null;
+    prevOppHp = null;
   }
 
   // transport の購読: matchStart/matchResumed で予測初期化。state は権威表示に使う(別途 $derived)。
@@ -166,6 +179,32 @@
     }
     return true;
   }
+
+  // 盤面結果音(被弾/防御=自陣 / 命中=相手)を権威スナップショット差分で鳴らす(ADR 0012)。
+  // 依存は displaySnapshot ではなく transport.authState(=HP/シールドの唯一の権威源)に張る。
+  // HP/シールドは権威でしか変わらない(ADR 0011 #9)ので、予測(打鍵)では authState が変わらず
+  // この effect は再走しない=予測二重発火が構造的に無い。
+  //
+  // 再接続(matchResumed)時の誤発火防止(B3 監査 blocker): matchResumed と直後の現況 state は
+  // サーバーで別フレーム送信(match-room.ts)=クライアントでは別 message イベント。matchResumed
+  // ハンドラの initPredictor() で prev3値を null に戻すが、その時点で authState は切断前の古い HP
+  // のまま残っている(transport は authState を一度もクリアしない)。もし displaySnapshot に依存
+  // していると、prediction 再代入で中間 flush が走り「切断前の古い HP」をベースラインに焼き付け、
+  // 続く現況 state(切断中に削られた低い HP)との差分で偽の被弾/命中音が鳴ってしまう。authState
+  // に依存すれば prediction 再代入では再走せず、matchResumed 後の最初の権威 state(=再開後の
+  // 現在 HP)が初回観測=ベースラインとなり、切断中に進んだ差分は鳴らない。
+  // 前値が !==null(=ベースライン済み)の時のみ鳴らし、その後に前値を現値へ更新する。
+  $effect(() => {
+    const auth = transport.authState;
+    if (auth === null) return;
+    if (prevSelfHp !== null && prevSelfShield !== null && prevOppHp !== null) {
+      sound.playSelfDamage(prevSelfHp, auth.self.hp, prevSelfShield, auth.self.shield);
+      sound.playEnemyHit(prevOppHp, auth.opponent.hp);
+    }
+    prevSelfHp = auth.self.hp;
+    prevSelfShield = auth.self.shield;
+    prevOppHp = auth.opponent.hp;
+  });
 
   // 接続状況バナー(切断猶予 / 再接続 / 相手切断, ADR 0011 #8/#11)。
   const statusBanner = $derived.by<string | null>(() => {
