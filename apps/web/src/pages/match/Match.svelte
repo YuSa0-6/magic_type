@@ -42,6 +42,13 @@
   // 効果音のミュート状態(ADR 0002: 状態は親が sound モジュール経由で保持し props で渡す)。
   let muted = $state(sound.isMuted());
 
+  // 盤面結果音(被弾/防御=自陣 / 命中=相手)検出用の前値トラッカー(ADR 0012 の盤面結果節)。
+  // 非リアクティブな plain let。null は未観測の番兵で、最初の観測ではベースライン設定のみ行い
+  // 鳴らさない(初期満タンや取りこぼしでの誤発火を防ぐ)。新マッチ/再戦で null に戻す。
+  let prevSelfHp: number | null = null;
+  let prevSelfShield: number | null = null;
+  let prevOppHp: number | null = null;
+
   // ミュートトグル。状態は sound モジュールが正(localStorage 永続)。
   function handleToggleMute(): void {
     sound.toggleMute();
@@ -62,6 +69,17 @@
   // timers も操作直後に取り直してよい(クールダウン開始などを即反映するため)。
   function refresh(now: number): void {
     snapshot = engine.snapshot(SELF_ID);
+    // 盤面結果音: 自陣 HP/シールド差分で被弾/防御、相手 HP 差分で命中を鳴らす(ADR 0012)。
+    // 前値が全て !==null(=ベースライン済み)の時のみ鳴らし、その後に前値を現値へ更新する。
+    // tick(ボット攻撃で自陣 HP 減)・自分の打鍵(発動で相手 HP 減)・選択 のどの契機でも
+    // 差分で正しく鳴る。相手起点の音(bot.step)を別途鳴らす必要は無い。
+    if (prevSelfHp !== null && prevSelfShield !== null && prevOppHp !== null) {
+      sound.playSelfDamage(prevSelfHp, snapshot.self.hp, prevSelfShield, snapshot.self.shield);
+      sound.playEnemyHit(prevOppHp, snapshot.opponent.hp);
+    }
+    prevSelfHp = snapshot.self.hp;
+    prevSelfShield = snapshot.self.shield;
+    prevOppHp = snapshot.opponent.hp;
     timers = engine.snapshotTimers(SELF_ID, now);
     if (snapshot.outcome.kind !== 'ongoing' && phase === 'battle') {
       finalOutcome = snapshot.outcome;
@@ -101,6 +119,10 @@
   function startMatch(): void {
     // バトル開始のユーザージェスチャ(スペース)で音システムを起動(ADR 0012)。
     sound.resume();
+    // 盤面結果音の前値をベースラインし直す(refresh 前に null で初回観測扱い, ADR 0012)。
+    prevSelfHp = null;
+    prevSelfShield = null;
+    prevOppHp = null;
     const now = performance.now();
     engine.start(now);
     phase = 'battle';
@@ -114,6 +136,10 @@
     bot = new MatchBot(engine, BOT_ID);
     finalOutcome = null;
     imeWarning = false;
+    // 盤面結果音の前値をベースラインし直す(refresh 前に null, ADR 0012)。
+    prevSelfHp = null;
+    prevSelfShield = null;
+    prevOppHp = null;
     const now = performance.now();
     engine.start(now);
     phase = 'battle';

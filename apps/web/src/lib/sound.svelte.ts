@@ -2,9 +2,14 @@
  * プレイ中の効果音(ADR 0012)。
  *
  * 音源は Web Audio API でコード合成する(録音ファイルは使わない=バンドル 0KB)。
- * 音は「自分の操作」起点のみ鳴らす — 相手(対戦相手/ボット)の操作・サーバー権威の
- * スナップショット適用・予測 reconcile では一切鳴らさない。配線側(Game/Match/Room)が
- * 自陣のローカル入力イベント時にだけ本モジュールを呼ぶことでこれを担保する。
+ * 打鍵/誤入力/選択/発動の音は「自分の操作」起点のみ鳴らす — 相手(対戦相手/ボット)の
+ * 操作・サーバー権威のスナップショット適用・予測 reconcile では一切鳴らさない。配線側
+ * (Game/Match/Room)が自陣のローカル入力イベント時にだけ本モジュールを呼ぶことで担保する。
+ *
+ * 盤面結果(被弾/防御/命中)はこの原則を意図的に拡張する(ADR 0012 の盤面結果節): 検出は
+ * 打鍵結果ではなく権威スナップショットの HP/シールド差分で行い、被弾は相手起点だが「自陣に
+ * 関わる結果」なので鳴らす。差分検出なので予測二重発火はしない(HP/シールドは権威でしか
+ * 変わらない, ADR 0011 #9)。優先規則・対象は playSelfDamage / playEnemyHit に集約する。
  *
  * 配置・規約: 状態(ミュート)を持つアプリ全体で 1 つの再生器なので、router.svelte.ts と
  * 同型の「モジュール singleton + $state + getter/名前付き関数 export」で公開する(ADR 0006)。
@@ -18,8 +23,9 @@
  * ミュート永続化: deck-storage.ts と同じ localStorage パターン(try/catch で例外を握り、
  * 失敗時は既定へ倒す)。キーは 'magic:sound-muted'。既定は音オン(unmuted)。
  *
- * 将来の素材差し替え: 各音は playClick / playError / playSelectTone / playActivation の
- * 小さな合成関数に閉じている。録音素材へ差し替える場合はこれらの中身だけを変えればよい。
+ * 将来の素材差し替え: 各音は playClick / playError / playSelectTone / playActivation /
+ * playDamageTaken / playShieldBlock / playHitLanded の小さな合成関数に閉じている。録音素材へ
+ * 差し替える場合はこれらの中身だけを変えればよい。
  */
 
 import type { PressResult } from '@magic/server/engine';
@@ -120,6 +126,36 @@ function tone(
   osc.stop(now + dur);
 }
 
+/**
+ * 周波数スライド対応の単音ヘルパー(tone の周波数ランプ版)。
+ * freq を start→end へ指数ランプし、ゲインは tone と同じ速い指数減衰でクリック感を出す。
+ * 盤面結果音(被弾の下降・命中の打撃)で「動き」を付けるために使う。
+ */
+function toneSlide(
+  ctx: AudioContext,
+  type: OscillatorType,
+  freqStart: number,
+  freqEnd: number,
+  startAtMs: number,
+  durationMs: number,
+  peak: number
+): void {
+  const now = ctx.currentTime + startAtMs / 1000;
+  const dur = durationMs / 1000;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = type;
+  // 周波数を start→end へ指数ランプ(exponential は 0 を取れないので両端とも正の値)。
+  osc.frequency.setValueAtTime(freqStart, now);
+  osc.frequency.exponentialRampToValueAtTime(freqEnd, now + dur);
+  gain.gain.setValueAtTime(peak, now);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(now);
+  osc.stop(now + dur);
+}
+
 /** 打鍵音: 短いサイン波クリック(約 760Hz, 約 40ms, 速い減衰, 小音量)。 */
 function playClick(ctx: AudioContext): void {
   tone(ctx, 'sine', 760, 0, 40, MASTER_GAIN);
@@ -141,6 +177,35 @@ function playActivation(ctx: AudioContext): void {
   tone(ctx, 'sine', 523.25, 0, 130, MASTER_GAIN * 0.8);
   tone(ctx, 'sine', 659.25, 70, 130, MASTER_GAIN * 0.8);
   tone(ctx, 'sine', 783.99, 140, 160, MASTER_GAIN * 0.9);
+}
+
+/**
+ * 被弾音: 低く重い下降の衝撃音(自陣 HP 減少時)。鋸波 170→60Hz の下降に矩形 90Hz を
+ * 薄く重ねて「ズン」と沈む重量感を出す。発動(上昇)・命中(中域・短い)と弁別する。
+ */
+function playDamageTaken(ctx: AudioContext): void {
+  // 主音: 低く沈む下降スライド(約 180ms)。
+  toneSlide(ctx, 'sawtooth', 170, 60, 0, 180, MASTER_GAIN);
+  // 補助: 90Hz の矩形を薄く重ねて重さを足す(主音より小さく)。
+  tone(ctx, 'square', 90, 0, 180, MASTER_GAIN * 0.4);
+}
+
+/**
+ * 防御音: 明るく短い金属的な「カキン」(自陣 shield 減少 かつ HP 不変時)。
+ * 高めの矩形(極短)+ さらに高い三角(やや長め)をわずかに重ねて硬質な響きを出す。
+ */
+function playShieldBlock(ctx: AudioContext): void {
+  tone(ctx, 'square', 1500, 0, 18, MASTER_GAIN * 0.5);
+  tone(ctx, 'triangle', 2200, 0, 30, MASTER_GAIN * 0.5);
+}
+
+/**
+ * 命中音: 中域の短い打撃音(相手/的の HP 減少時)。三角波 340→200Hz の短い下降で
+ * 「コツッ」と当たる軽さを出す。被弾(低く長い)・発動(上昇)に加え、誤入力(矩形 180Hz)
+ * とも波形(三角)と帯域でしっかり弁別する。
+ */
+function playHitLanded(ctx: AudioContext): void {
+  toneSlide(ctx, 'triangle', 340, 200, 0, 70, MASTER_GAIN * 0.75);
 }
 
 // ---- 公開 API ----
@@ -219,4 +284,58 @@ export function playSelect(): void {
     return;
   }
   playSelectTone(ctx);
+}
+
+/**
+ * 盤面結果(被弾/防御)を自陣の HP/シールド差分から鳴らす(ADR 0012 の盤面結果節)。
+ * 被弾は相手起点だが「自陣に関わる結果」なので鳴らす(自分の操作起点のみという原則の
+ * 意図的な拡張)。検出は打鍵結果ではなく権威スナップショットの差分で行う。
+ *
+ * 優先規則: HP が減れば被弾音(同時に shield も減っていても被弾優先)。HP 不変で
+ * shield だけ減れば防御音。それ以外は無音。差分判定と優先規則はこの関数に集約し、
+ * 配線側は前値/新値を渡すだけにする。対戦(対ボット/オンライン)専用(ソロは自陣 HP が無い)。
+ * ミュート時・非対応環境では何もしない。
+ */
+export function playSelfDamage(
+  prevHp: number,
+  nextHp: number,
+  prevShield: number,
+  nextShield: number
+): void {
+  if (muted) {
+    return;
+  }
+  const ctx = getCtx();
+  if (ctx === null || ctx.state !== 'running') {
+    return;
+  }
+  if (nextHp < prevHp) {
+    // HP 減少は被弾優先(同時にシールドも削れていても被弾音のみ)。
+    playDamageTaken(ctx);
+  } else if (nextShield < prevShield) {
+    // HP 不変でシールドだけ減った=防御成功。
+    playShieldBlock(ctx);
+  }
+  // それ以外(増加・不変)は無音。
+}
+
+/**
+ * 命中(相手/的の HP 減少)を差分から鳴らす(ADR 0012 の盤面結果節)。
+ * 検出は権威スナップショット差分。全モードで使う(ソロは的 HP の減少=自分の攻撃命中)。
+ * 相手側はシールドのみ減少の場合は無音(今回のスコープ外)。
+ * 差分判定はこの関数に集約し、配線側は前値/新値を渡すだけにする。
+ * ミュート時・非対応環境では何もしない。
+ */
+export function playEnemyHit(prevHp: number, nextHp: number): void {
+  if (muted) {
+    return;
+  }
+  const ctx = getCtx();
+  if (ctx === null || ctx.state !== 'running') {
+    return;
+  }
+  if (nextHp < prevHp) {
+    playHitLanded(ctx);
+  }
+  // 増加・不変は無音。
 }

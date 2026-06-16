@@ -40,6 +40,11 @@
   // ビュー BattleScreen には props で渡す薄い形にする)。localStorage 永続は sound 側。
   let muted = $state(sound.isMuted());
 
+  // 命中音(的 HP 減少)検出用の前値トラッカー(ADR 0012 の盤面結果節)。
+  // 非リアクティブな plain let。null は未観測の番兵で、最初の観測ではベースライン設定のみ
+  // 行い鳴らさない(初期満タンや取りこぼしでの誤発火を防ぐ)。新バトル/再戦で null に戻す。
+  let prevTargetHp: number | null = null;
+
   // ミュートトグル。状態は sound モジュールが正(localStorage 永続)。
   // クリック後はボタンを blur して以後の打鍵を妨げない(ADR 0012)。
   function handleToggleMute(): void {
@@ -51,6 +56,12 @@
   // timers も操作直後に取り直してよい(クールダウン開始などを即反映するため)。
   function refreshState(now: number): void {
     battleState = engine.snapshotState();
+    // 命中音: 的 HP が減っていれば鳴らす(差分検出, ADR 0012)。前値が null の最初の観測は
+    // ベースライン設定のみで鳴らさない。判定後に前値を現値へ更新する。
+    if (prevTargetHp !== null) {
+      sound.playEnemyHit(prevTargetHp, battleState.targetHp);
+    }
+    prevTargetHp = battleState.targetHp;
     timers = engine.snapshotTimers(now);
     if (battleState.finished && phase === 'battle') {
       finalStats = engine.stats();
@@ -87,6 +98,8 @@
   function startBattle(): void {
     // バトル開始のユーザージェスチャ(スペース)で音システムを起動(ADR 0012)。
     sound.resume();
+    // 命中音の前値をベースラインし直す(refreshState 前に null で初回観測扱いにする, ADR 0012)。
+    prevTargetHp = null;
     const now = performance.now();
     engine.start(now);
     phase = 'battle';
@@ -99,6 +112,8 @@
     engine = new BattleEngine(STARTER_DECK);
     finalStats = null;
     imeWarning = false;
+    // 命中音の前値をベースラインし直す(refreshState 前に null, ADR 0012)。
+    prevTargetHp = null;
     const now = performance.now();
     engine.start(now);
     phase = 'battle';
