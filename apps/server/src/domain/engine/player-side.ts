@@ -2,8 +2,8 @@
  * 対戦(PvP)エンジンの 1 陣営ぶんの状態と振る舞い(ADR 0011 #3)。
  *
  * BattleEngine(ソロ)の per-side 責務 — 山札シャッフル / 手札 / 捨て札 / ドロー、
- * カード選択(構え)、TypingSession 連携、クールダウン、先行入力ドレイン(ADR 0007)、
- * 詠唱計時、発動 — を再利用可能な単位として切り出したもの。フレームワーク非依存の
+ * カード選択(構え)、TypingSession 連携、クールダウン、詠唱計時、発動 — を
+ * 再利用可能な単位として切り出したもの。フレームワーク非依存の
  * 純 TS(ADR 0002)で、状態を変えるメソッドは時刻 atMs を外部から受け取る。
  *
  * BattleEngine と異なり、PlayerSide は「相手の HP」を持たない。発動はダメージ値を
@@ -48,11 +48,8 @@ export interface ActiveEffectView {
   readonly expiresAtMs: number;
 }
 
-/**
- * 1打鍵の結果(BattleEngine の PressResult と同義)。
- * - 'buffered' はクールダウン中の構え済み打鍵を先行入力バッファに積んだ状態(ADR 0007)。
- */
-export type PressResult = 'accepted' | 'mistyped' | 'activated' | 'blocked' | 'buffered';
+/** 1打鍵の結果(BattleEngine の PressResult と同義)。 */
+export type PressResult = 'accepted' | 'mistyped' | 'activated' | 'blocked';
 
 /**
  * 1 陣営ぶんの直列化状態(プレーンデータ, ADR 0009 #4 / 0011 #4)。
@@ -90,15 +87,13 @@ export interface PlayerSideDTO {
   } | null;
   /** 現詠唱の最初の受理打鍵時刻(まだなら null)。castTimeMs の起点。 */
   readonly castStartedAtMs: number | null;
-  /** クールダウン中に積まれた先行入力バッファ(ADR 0007)。 */
-  readonly typeahead: readonly string[];
   /** rng ストリームの内部状態(消費位置, ADR 0011 #4)。 */
   readonly rngState: number;
 }
 
 /**
  * 発動の結果(MatchEngine が相手 HP へ適用するための情報)。
- * applyKey / drainTypeahead の戻り値に同梱され、MatchEngine が回収する。
+ * applyKey の戻り値に同梱され、MatchEngine が回収する。
  */
 export interface Activation {
   readonly cardId: string;
@@ -129,13 +124,6 @@ function shuffle<T>(items: readonly T[], rng: () => number): T[] {
 
 const HAND_SIZE = 4;
 
-/**
- * 先行入力バッファの上限(ADR 0007)。BattleEngine と同値。
- * 暴走防止の上限。現実の先行入力長を十分に上回る値にして、正当な入力を
- * 無音破棄しないようにする。
- */
-const TYPEAHEAD_LIMIT = 64;
-
 export class PlayerSide {
   readonly maxHp: number;
   private readonly rng: () => number;
@@ -157,9 +145,6 @@ export class PlayerSide {
   private session: TypingSession | null = null;
   /** 現詠唱で最初の受理打鍵が起きた時刻(まだなら null) */
   private castStartedAtMs: number | null = null;
-
-  /** クールダウン中に構え済みカードへ打った打鍵の先行入力バッファ(ADR 0007) */
-  private typeahead: string[] = [];
 
   private cooldownUntilMs = 0;
 
@@ -336,8 +321,7 @@ export class PlayerSide {
 
   /**
    * 手札0〜3を選択する(構え)。クールダウン中でも選択自体は可能。
-   * 詠唱中に別カードへ切り替えると進捗は完全にリセットされる
-   * (誤入力カウントも先行入力バッファもリセット)。
+   * 詠唱中に別カードへ切り替えると進捗は完全にリセットされる(誤入力カウントもリセット)。
    * 同じカードの再選択は無視する(誤って同じキーを押しても進捗を失わない)。
    * 戻り値は選択したカード(MatchEngine がイベント記録に使う)。null は無視されたとき。
    */
@@ -352,7 +336,6 @@ export class PlayerSide {
     const card = this.hand[handIndex];
     this.session = new TypingSession(card.reading);
     this.castStartedAtMs = null;
-    this.typeahead = [];
     return { card, handIndex };
   }
 
@@ -360,66 +343,21 @@ export class PlayerSide {
    * 1打鍵を処理する。返り値は { result, activation }。
    * activation は発動が起きたときのみ非 null。MatchEngine がそれを相手 HP へ適用する。
    *
-   * 先頭で drainTypeahead を呼び、保留中の先行入力を順序通りに先へ流してから生打鍵を扱う
-   * (BattleEngine と同じ。ADR 0007 の打鍵順逆転バグ対策)。ドレインで発動が起きた場合は
-   * その発動を持ち帰り、続く生打鍵は session が消えるため blocked になる。
+   * - カード未選択/セッション無しは 'blocked'(誤入力に数えない)
+   * - クールダウン中の打鍵は受理せず 'blocked' を返す(破棄。先行入力は無い)
+   * - それ以外は TypingSession に委譲し、打ち切ったら発動
    */
   pressKey(key: string, atMs: number): { result: PressResult; activation: Activation | null } {
-    // 保留中の先行入力を先へ流す(クールダウン中・空・セッション無しなら no-op)。
-    // ドレイン由来の発動だけを持ち帰る(per-key の results は press 経路では使わない。
-    // web 側は ADR 0012 に従い press 前に明示 drainTypeahead を呼んで音を鳴らす)。
-    const drained = this.drainTypeahead(atMs).activation;
-
     if (this.selectedIndex === null || this.session === null) {
-      // ドレインで発動が起きていれば、それを持ち帰る(生打鍵自体は blocked)
-      return { result: 'blocked', activation: drained };
+      return { result: 'blocked', activation: null };
     }
-    // クールダウン中は捨てずに先行入力バッファへ積む(明けに drainTypeahead で受理)
+    // クールダウン中の打鍵は受理せず破棄する
     if (this.isOnCooldown(atMs)) {
-      if (this.typeahead.length < TYPEAHEAD_LIMIT) {
-        this.typeahead.push(key);
-      }
-      return { result: 'buffered', activation: drained };
+      return { result: 'blocked', activation: null };
     }
 
     const applied = this.applyKey(key, atMs);
-    // ドレインと生打鍵の両方で発動はあり得ないが、念のため後勝ちで持ち帰る
-    return { result: applied.result, activation: applied.activation ?? drained };
-  }
-
-  /**
-   * クールダウン明けに先行入力バッファをまとめて受理する(ADR 0007)。
-   * 受理時刻はクールダウン明けの時刻(cooldownUntilMs)で統一する。
-   * 発動が起きたら activation に同梱して返す(MatchEngine が相手 HP へ適用する)。
-   * 発動でセッションが消えたら以降のバッファは破棄する。
-   * results は受理した各打鍵の結果を順序通りに持つ(ADR 0012: UI 側がクールダウン明けに
-   * 実際に受理されたぶんだけ音を鳴らすのに使う。何もドレインしなければ空配列)。
-   */
-  drainTypeahead(atMs: number): { results: PressResult[]; activation: Activation | null } {
-    if (this.isOnCooldown(atMs) || this.typeahead.length === 0 || this.session === null) {
-      if (this.session === null) {
-        this.typeahead = [];
-      }
-      return { results: [], activation: null };
-    }
-
-    const acceptAtMs = this.cooldownUntilMs;
-    const buffered = this.typeahead;
-    this.typeahead = [];
-
-    const results: PressResult[] = [];
-    let activation: Activation | null = null;
-    for (const key of buffered) {
-      if (this.session === null) {
-        break;
-      }
-      const applied = this.applyKey(key, acceptAtMs);
-      results.push(applied.result);
-      if (applied.activation !== null) {
-        activation = applied.activation;
-      }
-    }
-    return { results, activation };
+    return { result: applied.result, activation: applied.activation };
   }
 
   /**
@@ -571,7 +509,6 @@ export class PlayerSide {
               mistypes: this.session.mistypeCount,
             },
       castStartedAtMs: this.castStartedAtMs,
-      typeahead: this.typeahead.slice(),
       rngState,
     };
   }
@@ -604,7 +541,6 @@ export class PlayerSide {
     }));
     this.selectedIndex = dto.selectedIndex;
     this.castStartedAtMs = dto.castStartedAtMs;
-    this.typeahead = dto.typeahead.slice();
     if (dto.cast === null) {
       this.session = null;
     } else {

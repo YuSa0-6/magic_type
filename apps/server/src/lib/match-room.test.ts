@@ -436,6 +436,9 @@ describe('MatchRoom DO Storage 永続化 + Alarms(ADR 0012)', () => {
     const a2 = await connect(room2);
     a2.emitMessage({ type: 'join', resumeId: aSeatId });
     expect(a2.messagesOfType('matchResumed')).toHaveLength(1);
+    // 1 枚目の発動で入ったクールダウンが明けてから 2 枚目を詠唱する
+    // (クールダウン中の打鍵は受理されないため。先行入力は廃止済み)。
+    await vi.advanceTimersByTimeAsync(2000);
     const handCardId2 = session2.snapshotFor(aSeatId, Date.now()).self.hand[0].id;
     a2.emitMessage({ type: 'input', commands: castCommands(0, handCardId2, Date.now()) });
     await vi.advanceTimersByTimeAsync(2000);

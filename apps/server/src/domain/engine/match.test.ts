@@ -387,24 +387,22 @@ describe('決定論(ADR 0009 #1 / 0011 #13)', () => {
   });
 });
 
-describe('先行入力(type-ahead)が per-side で機能する(ADR 0007)', () => {
-  it('クールダウン中の打鍵はバッファされ、明けにドレインで受理・発動する', () => {
+describe('クールダウン中は打鍵を受理しない(先行入力は廃止)', () => {
+  it('クールダウン中の打鍵は blocked で破棄され、明けに打ち直すと発動する', () => {
     const m = makeMatch(); // gale(5), cooldown1500
     m.start(0);
     castFull(m, 'A', 0, 'gale', 1000); // 発動 → 2500 までクールダウン。B:75
-    // クールダウン中に手札1(gale)を構えて全文を先行入力
+    // クールダウン中に手札1(gale)を構えて全文を打っても受理されない
     m.selectCard('A', 1, 1200);
     const r = romajiOf(byId('gale'));
     for (const k of r) {
-      expect(m.pressKey('A', k, 1200)).toBe('buffered');
+      expect(m.pressKey('A', k, 1200)).toBe('blocked');
     }
-    // まだ進まない / 相手 HP も変わらない
+    // 進まない / 相手 HP も変わらない(繰り越しも無い)
     expect(m.snapshot('A').opponent.hp).toBe(75);
-    // クールダウン明けにドレインすると全文が受理され発動 → さらに 5 ダメージ。
-    // 戻り値は受理した各打鍵の結果列(最後の打鍵が 'activated')。
-    const drained = m.drainTypeahead('A', 2500);
-    expect(drained.length).toBe(r.length);
-    expect(drained[drained.length - 1]).toBe('activated');
+
+    // クールダウン明け(2500)からは通常通り受理され、全文打ち切りで発動 → さらに 5 ダメージ。
+    for (const k of r) m.pressKey('A', k, 2500);
     expect(m.snapshot('A').opponent.hp).toBe(70);
   });
 });

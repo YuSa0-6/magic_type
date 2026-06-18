@@ -51,7 +51,7 @@ function summarize(m: MatchEngine, playerId: string) {
 const eventsOf = (m: MatchEngine): string[] => m.events.map((e) => JSON.stringify(e));
 
 describe('コマンドログ(ADR 0009 #3)', () => {
-  it('start/select/press/drain を受理順に記録する(eventLog とは別物)', () => {
+  it('start/select/press を受理順に記録する(eventLog とは別物)', () => {
     const m = new MatchEngine([
       { id: 'A', deck: monoDeck('gale') },
       { id: 'B', deck: monoDeck('gale') },
@@ -59,13 +59,11 @@ describe('コマンドログ(ADR 0009 #3)', () => {
     m.start(0);
     m.selectCard('A', 0, 1000);
     m.pressKey('A', 'k', 1000);
-    m.drainTypeahead('A', 1000);
 
     expect(m.commands).toEqual([
       { type: 'start', atMs: 0 },
       { type: 'select', playerId: 'A', handIndex: 0, atMs: 1000 },
       { type: 'press', playerId: 'A', key: 'k', atMs: 1000 },
-      { type: 'drain', playerId: 'A', atMs: 1000 },
     ]);
   });
 
@@ -225,7 +223,7 @@ describe('serialize/restore(ADR 0011 #4)', () => {
     expect(restored.snapshot('B').self.hp).toBe(80 - (17 - 2));
   });
 
-  it('クールダウン中の先行入力バッファも保存・復元される(ADR 0007)', () => {
+  it('クールダウン中の打鍵は破棄され、serialize/restore でも繰り越されない', () => {
     const make = () =>
       new MatchEngine([
         { id: 'A', deck: monoDeck('gale') },
@@ -239,25 +237,26 @@ describe('serialize/restore(ADR 0011 #4)', () => {
     };
     const r = romajiOf(byId('gale'));
 
+    // baseline: クールダウン中(1200)の打鍵は破棄され、明け(2500)に打ち直して発動。
     const baseline = make();
     baseline.start(0);
     baseline.selectCard('A', 0, 1000);
     for (const k of r) baseline.pressKey('A', k, 1000); // 発動 → 2500 までCD
     baseline.selectCard('A', 1, 1200);
-    for (const k of r) baseline.pressKey('A', k, 1200); // buffered
-    baseline.drainTypeahead('A', 2500); // 明けにドレイン発動
+    for (const k of r) baseline.pressKey('A', k, 1200); // クールダウン中 → blocked(破棄)
+    for (const k of r) baseline.pressKey('A', k, 2500); // 明けに打ち直し → 発動
 
+    // 同じ台本をクールダウン中まで進めて serialize し、restore 後に明けの打鍵を流す。
     const broken = make();
     broken.start(0);
     broken.selectCard('A', 0, 1000);
     for (const k of r) broken.pressKey('A', k, 1000);
     broken.selectCard('A', 1, 1200);
-    for (const k of r) broken.pressKey('A', k, 1200); // buffered
+    for (const k of r) broken.pressKey('A', k, 1200); // blocked(破棄。バッファは存在しない)
     const dto = broken.serialize();
-    expect(dto.sides[0].typeahead.length).toBe(r.length);
 
     const restored = MatchEngine.restore(cfg, dto);
-    restored.drainTypeahead('A', 2500);
+    for (const k of r) restored.pressKey('A', k, 2500);
 
     expect(summarize(restored, 'A')).toEqual(summarize(baseline, 'A'));
     expect(restored.snapshot('B').self.hp).toBe(baseline.snapshot('B').self.hp);

@@ -118,7 +118,7 @@
     return Date.now();
   }
 
-  // 時間 tick(約 100ms, ADR 0008)。自陣予測のクールダウン明け先行入力ドレイン + 表示更新。
+  // 時間 tick(約 100ms, ADR 0008)。自陣予測の表示更新のみ。
   // 権威状態(HP 等)は transport.authState が WS push で随時更新されるためここでは触らない。
   $effect(() => {
     if (transport.phase !== 'matched' || predictor === null) {
@@ -126,12 +126,6 @@
     }
     const id = setInterval(() => {
       if (predictor === null) return;
-      // 自陣予測のクールダウン明け先行入力をドレイン。受理した各打鍵に音を付ける(ADR 0012)。
-      // これはローカル入力イベント由来で、サーバー権威 push(reconcile)とは無関係。
-      const drained = predictor.drain(now());
-      for (const r of drained) {
-        sound.playForResult(r);
-      }
       prediction = predictor.snapshot();
     }, 100);
     return () => clearInterval(id);
@@ -262,12 +256,6 @@
     }
     if (e.key === '-' || (e.key.length === 1 && e.key >= 'a' && e.key <= 'z')) {
       e.preventDefault();
-      // ADR 0012: 先に明示ドレインで保留中の先行入力を流して音を鳴らし、その後に当該キーを適用する
-      // (予測 MatchEngine 内部のドレインで音が失われるのを防ぐ。順序は内部と同一)。自陣のみ。
-      const drained = predictor.drain(t);
-      for (const r of drained) {
-        sound.playForResult(r);
-      }
       const result = predictor.press(e.key, t);
       sound.playForResult(result);
       transport.enqueuePress(e.key, t);

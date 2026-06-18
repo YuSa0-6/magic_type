@@ -258,7 +258,7 @@ export class MatchSession {
    *      lastConfirmedAtMs 以上へ単調)。
    *   ② buffer から atMs <= authClock を全取り出し、(atMs, playerId) 安定ソートして
    *      engine へ順に適用(selectCard / pressKey)。atMs > authClock は次 tick へ残す。
-   *   ③ 両陣営 drainTypeahead(authClock)→ evaluateTimeUp(authClock)→ flush()。
+   *   ③ evaluateTimeUp(authClock)→ flush()。
    *   ④ lastConfirmedAtMs = authClock。
    * これで両者の atMs=T 入力は authClock が T を越える前にバッファへ揃い、ソートで隣接 →
    * 解決前に両方適用 = 厳密な同時撃破も draw(ADR 0010 #16)。終了したか(finished)を返す。
@@ -295,9 +295,7 @@ export class MatchSession {
       }
     }
 
-    // ③ 先行入力ドレイン(片側 KO の早漏れを避けるため両方先に)→ 時間切れ → flush。
-    this.engine.drainTypeahead(this.ids[0], authClock);
-    this.engine.drainTypeahead(this.ids[1], authClock);
+    // ③ 時間切れ評価 → flush。
     this.engine.evaluateTimeUp(authClock);
     this.engine.flush();
 
