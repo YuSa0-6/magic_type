@@ -20,6 +20,7 @@ export {
   markReady,
   canStart,
   tryStart,
+  resetForRematch,
   buildMatchConfig,
   roleOf,
   ok,

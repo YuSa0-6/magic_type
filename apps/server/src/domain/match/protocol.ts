@@ -31,7 +31,9 @@ export type ClientMessage =
    * 打鍵ストリーム(B2, ADR 0011 #2)。約 30〜50ms フレームでバッチした
    * 入力コマンド列を送る。サーバーが権威実行し、各 atMs を受信時刻でクランプする。
    */
-  | { readonly type: 'input'; readonly commands: readonly InputCommand[] };
+  | { readonly type: 'input'; readonly commands: readonly InputCommand[] }
+  /** 決着後、同じ相手との再戦に同意する(ADR 0011 #17)。 */
+  | { readonly type: 'rematchRequest' };
 
 /** server → client のメッセージ(B1 + B2 + B3)。 */
 export type ServerMessage =
@@ -83,7 +85,9 @@ export type ServerMessage =
    */
   | { readonly type: 'opponentConnection'; readonly paused: boolean }
   /** エラー(不正デッキ・満室・未知コード等)。message は人間可読の理由。 */
-  | { readonly type: 'error'; readonly message: string };
+  | { readonly type: 'error'; readonly message: string }
+  /** 相手が再戦に同意した(ADR 0011 #17)。表示用の通知のみで、両者揃うと新しい matchStart が届く。 */
+  | { readonly type: 'opponentRematchRequested' };
 
 /** matchEnd の視点別結果(ADR 0011 #12)。 */
 export type ServerOutcome = 'win' | 'lose' | 'draw' | 'forfeit';
@@ -112,6 +116,8 @@ export function parseClientMessage(raw: unknown): ClientMessage | null {
         : null;
     case 'ready':
       return { type: 'ready' };
+    case 'rematchRequest':
+      return { type: 'rematchRequest' };
     case 'input': {
       const commands = parseInputCommands(msg.commands);
       return commands === null ? null : { type: 'input', commands };

@@ -350,6 +350,80 @@ describe('MatchRoom B2 権威ループ(2 接続シミュレーション)', () =>
     await vi.advanceTimersByTimeAsync(31_000);
     expect(session.result?.endReason).not.toBe('forfeit');
   });
+
+  it('決着後、A のみ再戦要求では再開せず B へ opponentRematchRequested のみ届く(再戦, ADR 0011 #17)', async () => {
+    const { room, a, b } = await startMatch();
+    const session = room.matchSession;
+    if (session === null) throw new Error('session is null');
+    const selfId = a.messagesOfType('matchStart')[0].selfId;
+    // A が繰り返し詠唱して KO まで持っていく(既存 KO テストと同じパターン)。
+    for (let i = 0; i < 40 && !session.finished; i++) {
+      const handCardId = session.snapshotFor(selfId, Date.now()).self.hand[0].id;
+      a.emitMessage({ type: 'input', commands: castCommands(0, handCardId, Date.now()) });
+      await vi.advanceTimersByTimeAsync(1600);
+    }
+    expect(a.messagesOfType('matchEnd')).toHaveLength(1);
+    // A のみ再戦に同意。まだ 2 通目の matchStart は配信されない(B が未同意)。
+    a.emitMessage({ type: 'rematchRequest' });
+    expect(a.messagesOfType('matchStart')).toHaveLength(1);
+    expect(b.messagesOfType('matchStart')).toHaveLength(1);
+    // B へ相手の再戦希望が通知される。
+    expect(b.messagesOfType('opponentRematchRequested')).toHaveLength(1);
+  });
+
+  it('両者が再戦要求すると新 masterSeed で再開しエンジンが作り直される(再戦, ADR 0011 #17)', async () => {
+    const { room, a, b } = await startMatch();
+    const session = room.matchSession;
+    if (session === null) throw new Error('session is null');
+    const selfId = a.messagesOfType('matchStart')[0].selfId;
+    for (let i = 0; i < 40 && !session.finished; i++) {
+      const handCardId = session.snapshotFor(selfId, Date.now()).self.hand[0].id;
+      a.emitMessage({ type: 'input', commands: castCommands(0, handCardId, Date.now()) });
+      await vi.advanceTimersByTimeAsync(1600);
+    }
+    const firstSeed = a.messagesOfType('matchStart')[0].seed;
+    const firstSession = room.matchSession;
+    const firstEngine = room.matchEngine;
+    // 両者が同意 → 2 通目の matchStart が両者へ配信される。
+    a.emitMessage({ type: 'rematchRequest' });
+    b.emitMessage({ type: 'rematchRequest' });
+    const aStarts = a.messagesOfType('matchStart');
+    const bStarts = b.messagesOfType('matchStart');
+    expect(aStarts).toHaveLength(2);
+    expect(bStarts).toHaveLength(2);
+    // 再戦は新しい masterSeed。
+    expect(aStarts[1].seed).not.toBe(firstSeed);
+    // engine / session が作り直されている(使い回しではない)。
+    expect(room.matchSession).not.toBe(firstSession);
+    expect(room.matchEngine).not.toBe(firstEngine);
+    expect(room.matchSession).not.toBeNull();
+    // 再戦マッチも通常どおり機能する: 再度 KO まで進められ matchEnd が 2 通目として届く。
+    const session2 = room.matchSession;
+    if (session2 === null) throw new Error('session2 is null');
+    const selfId2 = aStarts[1].selfId;
+    for (let i = 0; i < 40 && !session2.finished; i++) {
+      const handCardId = session2.snapshotFor(selfId2, Date.now()).self.hand[0].id;
+      a.emitMessage({ type: 'input', commands: castCommands(0, handCardId, Date.now()) });
+      await vi.advanceTimersByTimeAsync(1600);
+    }
+    expect(session2.finished).toBe(true);
+    expect(a.messagesOfType('matchEnd')).toHaveLength(2);
+    expect(b.messagesOfType('matchEnd')).toHaveLength(2);
+  });
+
+  it('決着前の再戦要求は無視される(matchStart が増えない, 再戦 ADR 0011 #17)', async () => {
+    const { room, a, b } = await startMatch();
+    expect(a.messagesOfType('matchStart')).toHaveLength(1);
+    // 対戦中(未決着 = ended が false)に再戦要求を送っても無視される。
+    a.emitMessage({ type: 'rematchRequest' });
+    b.emitMessage({ type: 'rematchRequest' });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(a.messagesOfType('matchStart')).toHaveLength(1);
+    expect(b.messagesOfType('matchStart')).toHaveLength(1);
+    // 相手への通知も飛ばない(決着前ゲートで弾かれる)。
+    expect(b.messagesOfType('opponentRematchRequested')).toHaveLength(0);
+    void room;
+  });
 });
 
 /**
