@@ -62,7 +62,8 @@ type ServerMessage =
       readonly opponentId: string;
     }
   | { readonly type: 'opponentConnection'; readonly paused: boolean }
-  | { readonly type: 'error'; readonly message: string };
+  | { readonly type: 'error'; readonly message: string }
+  | { readonly type: 'opponentRematchRequested' };
 
 /** 接続/対戦のフェーズ(UI 出し分け用)。 */
 export type TransportPhase =
@@ -117,6 +118,10 @@ export class MatchTransport {
   reconnecting = $state(false);
   /** 直近のエラーメッセージ(不正デッキ・満室等)。 */
   errorMessage = $state<string | null>(null);
+  /** 自分が再戦に同意したか(決着後, ADR 0011 #17)。二重送信ガードにも使う。 */
+  rematchSelfRequested = $state(false);
+  /** 相手が再戦に同意したか(opponentRematchRequested 受信, ADR 0011 #17)。 */
+  rematchOpponentRequested = $state(false);
 
   /** state / matchStart / matchResumed の購読フック(予測エンジンを駆動する Match 側が登録)。 */
   onMessage: ((msg: ServerMessage) => void) | null = null;
@@ -221,6 +226,10 @@ export class MatchTransport {
         this.deckAccepted = true;
         break;
       case 'matchStart':
+        // 再戦(#17)後の新マッチ用にフラグをリセットする(初回は元々 false/null で無害)。
+        this.ended = null;
+        this.rematchSelfRequested = false;
+        this.rematchOpponentRequested = false;
         this.start = { seed: msg.seed, selfId: msg.selfId, opponentId: msg.opponentId };
         this.opponentPresent = true;
         this.phase = 'matched';
@@ -251,6 +260,9 @@ export class MatchTransport {
         break;
       case 'opponentConnection':
         this.opponentPaused = msg.paused;
+        break;
+      case 'opponentRematchRequested':
+        this.rematchOpponentRequested = true;
         break;
       case 'error':
         this.errorMessage = msg.message;
@@ -354,6 +366,15 @@ export class MatchTransport {
       }
       this.socket = null;
     }
+  }
+
+  /** 再戦に同意する(決着後のみ有効。二重送信はガードする, ADR 0011 #17)。 */
+  requestRematch(): void {
+    if (this.phase !== 'ended' || this.rematchSelfRequested) {
+      return;
+    }
+    this.rematchSelfRequested = true;
+    this.sendRaw({ type: 'rematchRequest' });
   }
 
   /** 生メッセージを送る(OPEN でなければ捨てる)。 */

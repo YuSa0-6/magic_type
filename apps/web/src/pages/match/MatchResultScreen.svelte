@@ -4,6 +4,15 @@
 
   // 対戦リザルト画面: 確定した outcome と最終 HP を表示するだけ(整形のみ, ADR 0002)。
   // 再戦操作(スペースキー)は Match 側の window keydown で処理する。
+
+  /** 再戦(#17, オンライン対戦のみ)。オフライン(vsボット)は渡さないので従来の見た目のまま。 */
+  interface RematchState {
+    readonly countdownSeconds: number;
+    readonly selfRequested: boolean;
+    readonly opponentRequested: boolean;
+    readonly onRematch: () => void;
+  }
+
   interface Props {
     outcome: MatchOutcome;
     snapshot: MatchSnapshot;
@@ -11,6 +20,8 @@
     opponentLabel?: string;
     /** リザルト下部の操作プロンプト(オンラインは別の導線にするため差し替え可)。 */
     promptText?: string;
+    /** 再戦 UI(#17)。渡された時だけ結果画面に再戦導線を出す。オフラインは未指定。 */
+    rematch?: RematchState;
   }
 
   const {
@@ -18,6 +29,7 @@
     snapshot,
     opponentLabel = '相手(ボット)',
     promptText = 'スペースキーで再戦',
+    rematch,
   }: Props = $props();
 
   // 勝敗の見出し(視点は自陣)。outcome.kind は ongoing 以外がここに来る。
@@ -72,6 +84,19 @@
   </div>
 
   <p class="prompt">{promptText}</p>
+  {#if rematch}
+    <div class="rematch">
+      {#if rematch.selfRequested}
+        <p class="rematch-status">再戦を申し込みました。相手の応答を待っています…</p>
+      {:else}
+        {#if rematch.opponentRequested}
+          <p class="rematch-status highlight">相手が再戦を希望しています!</p>
+        {/if}
+        <p class="rematch-countdown">{rematch.countdownSeconds}</p>
+        <button type="button" class="primary" onclick={rematch.onRematch}>再戦</button>
+      {/if}
+    </div>
+  {/if}
   <nav class="nav">
     <a class="link" href="/deck" onclick={(e) => handleNavClick(e, 'deck')}>デッキ編集</a>
     <a class="link" href="/" onclick={(e) => handleNavClick(e, 'home')}>ホームへ戻る</a>
@@ -149,5 +174,48 @@
     color: #1565c0;
     text-decoration: underline;
     font-family: sans-serif;
+  }
+
+  .rematch {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    margin: 1rem 0;
+  }
+
+  .rematch-status {
+    font-size: 1rem;
+    color: #555;
+    margin: 0;
+  }
+
+  .rematch-status.highlight {
+    color: #1565c0;
+    font-weight: bold;
+  }
+
+  .rematch-countdown {
+    font-size: 2.4rem;
+    font-weight: bold;
+    color: #1565c0;
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .primary {
+    padding: 0.6rem 1.6rem;
+    border-radius: 6px;
+    border: none;
+    background: #1565c0;
+    color: #fff;
+    font-weight: bold;
+    font-size: 1rem;
+    font-family: 'Courier New', monospace;
+    cursor: pointer;
+  }
+
+  .primary:hover {
+    background: #0d47a1;
   }
 </style>
