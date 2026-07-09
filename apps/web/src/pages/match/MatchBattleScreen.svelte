@@ -1,5 +1,16 @@
 <script lang="ts">
-  import type { MatchSnapshot, MatchTimers, PlayerState } from '@magic/server/engine';
+  import type {
+    MatchSnapshot,
+    MatchTimers,
+    Card as CardModel,
+    ActiveEffectView,
+  } from '@magic/server/engine';
+  import Card from '../../ui/Card.svelte';
+  import HpBar from '../../ui/HpBar.svelte';
+  import Panel from '../../ui/Panel.svelte';
+  import StatusBadge from '../../ui/StatusBadge.svelte';
+  import { formatSeconds } from '../../lib/format';
+  import { HAND_ROTATIONS } from '../../lib/card-format';
 
   // 対戦バトル画面: 2 陣営のスナップショットを表示するだけの薄い皮(ADR 0002)。
   // 業務ロジックは持たず、カードクリックは親へ通知するのみ。自陣のみ操作可能。
@@ -38,441 +49,451 @@
 
   const self = $derived(snapshot.self);
   const opponent = $derived(snapshot.opponent);
+  const selectedCard = $derived(self.selectedIndex === null ? null : self.hand[self.selectedIndex]);
 
-  // HP のテキストバー(████████░░ 形式)。表示専用の整形であり判定ではない。
-  const BAR_LENGTH = 12;
-  function hpBar(p: PlayerState): string {
-    const ratio = p.maxHp === 0 ? 0 : p.hp / p.maxHp;
-    const filled = Math.round(ratio * BAR_LENGTH);
-    return '█'.repeat(filled) + '░'.repeat(BAR_LENGTH - filled);
-  }
-
-  function formatSeconds(ms: number): string {
-    return (ms / 1000).toFixed(1);
-  }
-
-  // 持続効果(haste/slow)を日本語ラベルに整形する(表示専用)。
+  // 持続効果(haste/slow)を日本語ラベルに整形する(表示専用)。StatusBadge の variant にも kind をそのまま渡す。
   function effectLabel(kind: 'haste' | 'slow'): string {
     return kind === 'haste' ? '加速' : '鈍化';
   }
 
-  const selfOnCooldown = $derived(timers.selfCooldownRemainingMs > 0);
-  const selectedCard = $derived(self.selectedIndex === null ? null : self.hand[self.selectedIndex]);
+  // 相手伏せ札の逆さ扇(180±数度)。呼び出し側で角度を決めて Card に渡す。
+  const OPP_HAND_ROTATIONS = [176, 179, 181, 184];
+
+  // CD ゲージは「回復の進捗」を 0→1 で表す。selfCooldownRemainingMs を実効 CD 時間で割って反転する。
+  // 実効 CD 時間はエンジン内部にしか無い(MatchTimers/ActiveEffectView は公開しない)ため、
+  // 現在アクティブな haste/slow から近似する(エンジンの cdDeltaAt と同じ考え方)。CD 開始後に
+  // 効果が新たに切れる/入れ替わると近似はズレるが、card.cooldownMs 固定(旧実装)は haste/slow 中
+  // 必ず不正確(進捗が負になりゲージが消える等)だったのに対し、これは実態に近い次善策。
+  function estimatedCooldownTotalMs(card: CardModel): number {
+    let delta = 0;
+    for (const eff of self.activeEffects) {
+      delta += eff.kind === 'haste' ? -eff.ms : eff.ms;
+    }
+    return Math.max(1, card.cooldownMs + delta);
+  }
+
+  function cooldownRecovery(card: CardModel): number | undefined {
+    if (timers.selfCooldownRemainingMs <= 0) return undefined;
+    return 1 - timers.selfCooldownRemainingMs / estimatedCooldownTotalMs(card);
+  }
+
+  // 被弾シェイク(README「自分側が一瞬シェイク」)。自陣 HP の減少を検知して seq をインクリメント。
+  // rAF は使わない(ADR 0008)。prevSelfHp は描画に使わない履歴。このページ限定の演出なので
+  // 共通部品化せずトップレベルに閉じる。footer を {#key} で貼り直すと中の HpBar が再マウントされ
+  // 内部のフラッシュ検知履歴が消えるため、footer 自体は再マウントしない。代わりに同一 seq が
+  // 連続する短い間隔での再被弾でも必ずアニメーションが再生されるよう、奇数/偶数 seq で名前違いの
+  // 同一 keyframes を交互に割り当てる(同じ animation 値の再代入はブラウザが再生しないため)。
+  let prevSelfHp: number | null = null;
+  let shakeSeq = $state(0);
+  $effect(() => {
+    const cur = self.hp;
+    if (prevSelfHp !== null && cur < prevSelfHp) shakeSeq += 1;
+    prevSelfHp = cur;
+  });
+  const shakeStyle = $derived(
+    shakeSeq === 0 ? '' : `animation: self-shake-${shakeSeq % 2 === 0 ? 'b' : 'a'} 0.4s ease-out;`
+  );
 </script>
 
-<section class="battle">
-  <!-- 接続状況バナー(オンラインの切断/再接続表示用)。 -->
-  {#if statusBanner}
-    <div class="status-banner" role="status">{statusBanner}</div>
+{#snippet statusBadges(effects: readonly ActiveEffectView[], shield: number)}
+  {#each effects as eff (eff.kind)}
+    <StatusBadge variant={eff.kind} label={effectLabel(eff.kind)} />
+  {/each}
+  {#if shield > 0}
+    <StatusBadge variant="shield" label={`盾 ${shield}`} />
   {/if}
+{/snippet}
 
-  <!-- 制限時間 + ミュートトグル(隅) -->
-  <div class="topbar">
-    <div class="timebar">
-      残り時間 <strong>{formatSeconds(timers.remainingMs)}</strong> 秒
-    </div>
-    <button
-      type="button"
-      class="mute"
-      aria-label={muted ? '効果音をオンにする' : '効果音をオフにする'}
-      aria-pressed={muted}
-      onclick={handleMuteClick}
-    >
-      {muted ? '🔇' : '🔊'}
-    </button>
-  </div>
-
-  <!-- 相手陣(伏せ / 進捗のみ) -->
-  <div class="side opponent">
-    <div class="side-head">
-      <span class="who">{opponentLabel}</span>
-      <span class="hp-num">{opponent.hp}/{opponent.maxHp}</span>
-    </div>
-    <div class="hp-row">
-      <span class="bar opp-bar">{hpBar(opponent)}</span>
-      {#if opponent.shield > 0}
-        <span class="shield">シールド {opponent.shield}</span>
-      {/if}
-    </div>
-    {#if opponent.activeEffects.length > 0}
-      <div class="effects">
-        {#each opponent.activeEffects as eff (eff.kind)}
-          <span class="effect" class:haste={eff.kind === 'haste'} class:slow={eff.kind === 'slow'}>
-            {effectLabel(eff.kind)}
-          </span>
-        {/each}
-      </div>
-    {/if}
-    <!-- 相手の手札は伏せ。進捗(詠唱中か / ガイド長)だけ示す。 -->
-    <div class="opp-hand">
-      {#each opponent.hand as _card, i (i)}
-        <div class="opp-card" class:casting={opponent.selectedIndex === i}>?</div>
-      {/each}
-    </div>
-    <div class="opp-cast">
-      {#if opponent.selectedIndex !== null}
-        詠唱中… 進捗 {opponent.typedRomaji.length} 文字
-        <span class="cd">(クールダウン {formatSeconds(timers.opponentCooldownRemainingMs)}秒)</span>
-      {:else}
-        構え中…
-      {/if}
-    </div>
-  </div>
-
-  <div class="vs">VS</div>
-
-  <!-- 自陣 -->
-  <div class="side self">
-    <div class="side-head">
-      <span class="who">自分</span>
-      <span class="hp-num">{self.hp}/{self.maxHp}</span>
-    </div>
-    <div class="hp-row">
-      <span class="bar self-bar">{hpBar(self)}</span>
-      {#if self.shield > 0}
-        <span class="shield">シールド {self.shield}</span>
-      {/if}
-    </div>
-    {#if self.activeEffects.length > 0}
-      <div class="effects">
-        {#each self.activeEffects as eff (eff.kind)}
-          <span class="effect" class:haste={eff.kind === 'haste'} class:slow={eff.kind === 'slow'}>
-            {effectLabel(eff.kind)}
-          </span>
-        {/each}
-      </div>
-    {/if}
-
-    <!-- 自陣の手札4枚(操作可) -->
-    <div class="hand">
-      {#each self.hand as card, i (i)}
-        <button
-          type="button"
-          class="card"
-          class:selected={self.selectedIndex === i}
-          onclick={() => onSelectCard(i)}
-        >
-          <div class="card-no">{i + 1}</div>
-          <div class="card-name">{card.name}</div>
-          <div class="card-damage">ダメージ {card.damage}</div>
-          {#if card.effects.length > 0}
-            <div class="card-effect">効果あり</div>
-          {/if}
-          {#if selfOnCooldown}
-            <div class="card-cooldown">クールダウン中</div>
-          {/if}
-        </button>
-      {/each}
-    </div>
-
-    <!-- 選択中カードのお題と詠唱状況 -->
-    <div class="cast">
-      {#if selectedCard}
-        <div class="display-text">{selectedCard.displayText}</div>
-        <div class="reading">読み: {selectedCard.reading}</div>
-        <div class="guide">
-          <span class="typed">{self.typedRomaji}</span><span class="remaining"
-            >{self.remainingGuide}</span
-          >
+<div class="stage-viewport">
+  <div class="stage">
+    <section class="battle">
+      <!-- 接続状況バナー(オンラインの切断/再接続表示用)。 -->
+      {#if statusBanner}
+        <div class="banner">
+          <StatusBadge variant="warning" label={statusBanner} />
         </div>
-      {:else}
-        <div class="no-select">カードを選択してください(1〜4キー / クリック)</div>
       {/if}
-    </div>
 
-    {#if imeWarning}
-      <div class="ime-warning" role="alert">
-        日本語入力(IME)がオンのようです。半角英数で入力してください
+      <!-- 上段: 相手情報(左)・相手の伏せ札(中央)・残り時間/ミュート(右) -->
+      <header class="top">
+        <div class="side-info opponent">
+          <div class="info-head">
+            <span class="who">{opponentLabel}</span>
+            {@render statusBadges(opponent.activeEffects, opponent.shield)}
+            <span class="hp-num">{opponent.hp}/{opponent.maxHp}</span>
+          </div>
+          <HpBar hp={opponent.hp} maxHp={opponent.maxHp} side="opponent" shield={opponent.shield} />
+        </div>
+
+        <div class="opp-field">
+          <div class="opp-hand">
+            {#each opponent.hand as _card, i (i)}
+              <Card
+                face="back"
+                width={130}
+                interactive={false}
+                rotateDeg={OPP_HAND_ROTATIONS[i] ?? 180}
+                casting={opponent.selectedIndex === i}
+              />
+            {/each}
+          </div>
+          <div class="opp-cast">
+            {#if opponent.selectedIndex !== null}
+              詠唱中… 進捗 {opponent.typedRomaji.length} 文字
+              <span class="opp-cd"
+                >(クールダウン {formatSeconds(timers.opponentCooldownRemainingMs)}秒)</span
+              >
+            {:else}
+              構え中…
+            {/if}
+          </div>
+        </div>
+
+        <div class="clock">
+          <div class="clock-time">
+            <span class="clock-num">⏳ {formatSeconds(timers.remainingMs)}</span>
+            <span class="clock-unit">秒</span>
+          </div>
+          <button
+            type="button"
+            class="mute"
+            aria-label={muted ? '効果音をオンにする' : '効果音をオフにする'}
+            aria-pressed={muted}
+            onclick={handleMuteClick}
+          >
+            {muted ? '🔇' : '🔊'}
+          </button>
+        </div>
+      </header>
+
+      <!-- 中段: 詠唱枠(選択中カードのお題と詠唱状況)。IME 警告もここに出す。 -->
+      <div class="cast">
+        {#if imeWarning}
+          <div class="ime">
+            <StatusBadge
+              variant="warning"
+              label="日本語入力(IME)がオンのようです。半角英数で入力してください"
+            />
+          </div>
+        {/if}
+        <Panel variant="parchment">
+          <div class="cast-body">
+            {#if selectedCard}
+              <div class="cast-title">{selectedCard.displayText}</div>
+              <div class="cast-kana">{selectedCard.reading}</div>
+              <div class="cast-romaji">
+                <span class="typed">{self.typedRomaji}</span><span class="remaining"
+                  >{self.remainingGuide}</span
+                >
+              </div>
+            {:else}
+              <div class="cast-empty">カードを選択してください(左から 1〜4 キー / クリック)</div>
+            {/if}
+          </div>
+        </Panel>
       </div>
-    {/if}
 
-    <!-- 自陣の詳細情報 -->
-    <div class="info">
-      <span>誤入力: {self.castMistypes}</span>
-      <span>山札: {self.drawPileCount}枚</span>
-      <span>捨て札: {self.discardPileCount}枚</span>
-      <span>クールダウン残り: {formatSeconds(timers.selfCooldownRemainingMs)}秒</span>
-    </div>
+      <!-- 下段: 自陣情報(左)・手札4枚(中央)・山札/捨て札(右)。被弾でシェイクする。 -->
+      <footer class="bottom" style={shakeStyle}>
+        <div class="side-info self">
+          <div class="info-head">
+            <span class="who">自分</span>
+            {@render statusBadges(self.activeEffects, self.shield)}
+            <span class="hp-num">{self.hp}/{self.maxHp}</span>
+          </div>
+          <HpBar hp={self.hp} maxHp={self.maxHp} side="self" shield={self.shield} />
+          <div class="self-meta">
+            <span>誤入力 {self.castMistypes}</span>
+            <span>CD {formatSeconds(timers.selfCooldownRemainingMs)}秒</span>
+          </div>
+        </div>
+
+        <div class="hand">
+          {#each self.hand as card, i (i)}
+            <Card
+              face="front"
+              {card}
+              width={150}
+              interactive
+              rotateDeg={HAND_ROTATIONS[i] ?? 0}
+              selected={self.selectedIndex === i}
+              cooldownProgress={cooldownRecovery(card)}
+              onSelect={() => onSelectCard(i)}
+            />
+          {/each}
+        </div>
+
+        <div class="piles">
+          <span>山札 {self.drawPileCount}</span>
+          <span>捨て札 {self.discardPileCount}</span>
+        </div>
+      </footer>
+    </section>
   </div>
-</section>
+</div>
 
 <style>
   .battle {
-    width: 100%;
-    max-width: 720px;
-    font-family: 'Courier New', monospace;
-  }
-
-  .status-banner {
-    text-align: center;
-    background: #fff8e1;
-    border: 1px solid #f0c36d;
-    color: #8a6d00;
-    border-radius: 6px;
-    padding: 0.5rem 0.75rem;
-    margin-bottom: 0.8rem;
-    font-size: 0.95rem;
-  }
-
-  .topbar {
     position: relative;
-    margin-bottom: 0.8rem;
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    padding: 40px 72px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg-radial-battle);
+    font-family: var(--font-body);
   }
 
-  .timebar {
-    text-align: center;
-    font-size: 1.1rem;
-    color: #555;
-  }
-
-  .timebar strong {
-    color: #1565c0;
-    font-size: 1.3rem;
-  }
-
-  .mute {
+  /* 接続状況バナー: 盤面上部中央にオーバーレイ(3 段レイアウトを崩さない)。 */
+  .banner {
     position: absolute;
-    top: 50%;
-    right: 0;
-    transform: translateY(-50%);
-    border: 1px solid #bbb;
-    border-radius: 6px;
-    background: #fafafa;
-    padding: 0.2rem 0.4rem;
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 1rem;
-    line-height: 1;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2;
   }
 
-  .mute:hover {
-    background: #eee;
-  }
-
-  .side {
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    padding: 0.8rem;
-    margin-bottom: 0.5rem;
-  }
-
-  .side.opponent {
-    background: #fff5f5;
-    border-color: #f1c0c0;
-  }
-
-  .side.self {
-    background: #f3f8ff;
-    border-color: #bcd6f5;
-  }
-
-  .side-head {
+  /* 上段・下段は同じ [460px][flex:1][280px] の対面構成(上は上詰め・下は下詰め)。 */
+  .top,
+  .bottom {
+    width: 100%;
     display: flex;
     justify-content: space-between;
+    gap: 40px;
+  }
+
+  .top {
+    align-items: flex-start;
+  }
+
+  .bottom {
+    align-items: flex-end;
+  }
+
+  .side-info {
+    width: 460px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .info-head {
+    display: flex;
     align-items: baseline;
-    font-size: 1.05rem;
-    margin-bottom: 0.3rem;
+    flex-wrap: wrap;
+    gap: 14px;
   }
 
   .who {
-    font-weight: bold;
+    font-family: var(--font-serif);
+    font-size: 34px;
+    font-weight: 700;
+    color: var(--text-heading);
   }
 
   .hp-num {
-    font-weight: bold;
+    font-family: var(--font-mono);
+    font-size: 26px;
+    color: var(--text-body);
   }
 
-  .hp-row {
+  .self-meta {
     display: flex;
+    gap: 20px;
+    font-size: 22px;
+    color: var(--text-faint);
+  }
+
+  /* 相手の伏せ札(逆さ扇)と詠唱進捗テキスト。 */
+  .opp-field {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 0.8rem;
-    margin-bottom: 0.3rem;
-  }
-
-  .bar {
-    letter-spacing: 1px;
-    font-size: 1.1rem;
-  }
-
-  .opp-bar {
-    color: #c62828;
-  }
-
-  .self-bar {
-    color: #2e7d32;
-  }
-
-  .shield {
-    font-size: 0.8rem;
-    color: #1565c0;
-    background: #e3f2fd;
-    border-radius: 4px;
-    padding: 0.1rem 0.4rem;
-  }
-
-  .effects {
-    display: flex;
-    gap: 0.4rem;
-    margin-bottom: 0.3rem;
-  }
-
-  .effect {
-    font-size: 0.75rem;
-    border-radius: 4px;
-    padding: 0.1rem 0.4rem;
-  }
-
-  .effect.haste {
-    color: #1b5e20;
-    background: #e8f5e9;
-  }
-
-  .effect.slow {
-    color: #8a6d00;
-    background: #fff8e1;
+    gap: 14px;
+    padding-top: 8px;
   }
 
   .opp-hand {
     display: flex;
-    gap: 0.4rem;
-    margin: 0.4rem 0;
-  }
-
-  .opp-card {
-    flex: 1;
-    border: 2px solid #e0aaaa;
-    border-radius: 6px;
-    background: #fbe9e9;
-    padding: 0.8rem 0;
-    text-align: center;
-    font-size: 1.2rem;
-    color: #b06a6a;
-  }
-
-  .opp-card.casting {
-    border-color: #c62828;
-    box-shadow: 0 0 0 2px #c62828 inset;
-    color: #c62828;
+    justify-content: center;
+    align-items: flex-start;
+    gap: 26px;
   }
 
   .opp-cast {
-    font-size: 0.85rem;
-    color: #777;
-  }
-
-  .opp-cast .cd {
-    color: #999;
-  }
-
-  .vs {
+    font-size: 22px;
+    color: var(--text-faint);
     text-align: center;
-    font-weight: bold;
-    color: #999;
-    margin: 0.3rem 0;
   }
 
-  .hand {
+  .opp-cd {
+    color: var(--text-faintest);
+  }
+
+  /* 残り時間 + ミュート(右上)。 */
+  .clock {
+    width: 280px;
     display: flex;
-    gap: 0.5rem;
-    margin: 0.5rem 0 1rem;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 14px;
   }
 
-  .card {
-    flex: 1;
-    border: 2px solid #bbb;
-    border-radius: 6px;
-    background: #fafafa;
-    padding: 0.6rem 0.4rem;
+  .clock-time {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .clock-num {
+    font-family: var(--font-mono);
+    font-size: 44px;
+    font-weight: 700;
+    color: var(--text-heading);
+    letter-spacing: 0.02em;
+  }
+
+  .clock-unit {
+    font-size: 24px;
+    color: var(--text-faint);
+  }
+
+  .mute {
+    width: 52px;
+    height: 52px;
+    border: 2px solid var(--gold);
+    border-radius: 12px;
+    background: rgba(201, 163, 90, 0.06);
+    color: var(--text-heading);
     cursor: pointer;
-    text-align: center;
-    font-family: inherit;
+    font-size: 24px;
+    line-height: 1;
+    transition: box-shadow 0.12s ease-out;
   }
 
-  .card.selected {
-    border-color: #1565c0;
-    background: #e3f2fd;
-    box-shadow: 0 0 0 2px #1565c0 inset;
+  .mute:hover,
+  .mute:focus-visible {
+    box-shadow: 0 0 18px var(--gold-glow-25);
+    outline: none;
   }
 
-  .card-no {
-    font-weight: bold;
-    color: #1565c0;
-  }
-
-  .card-name {
-    font-size: 1.05rem;
-    margin: 0.2rem 0;
-  }
-
-  .card-damage {
-    font-size: 0.8rem;
-    color: #555;
-  }
-
-  .card-effect {
-    font-size: 0.75rem;
-    color: #6a1b9a;
-  }
-
-  .card-cooldown {
-    font-size: 0.8rem;
-    color: #c62828;
-    margin-top: 0.2rem;
-  }
-
+  /* 中段: 詠唱枠。 */
   .cast {
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    padding: 1rem;
-    margin-bottom: 0.8rem;
-    min-height: 4.5rem;
-    background: #fff;
+    width: 980px;
   }
 
-  .display-text {
-    font-size: 1.3rem;
-    font-family: sans-serif;
-    margin-bottom: 0.3rem;
-  }
-
-  .reading {
-    color: #777;
-    font-size: 0.9rem;
-    margin-bottom: 0.6rem;
-  }
-
-  .guide {
-    font-size: 1.4rem;
-    letter-spacing: 1px;
-  }
-
-  .typed {
-    color: #2e7d32;
-  }
-
-  .remaining {
-    color: #999;
-  }
-
-  .no-select {
-    color: #999;
-  }
-
-  .ime-warning {
-    border: 1px solid #f0c36d;
-    background: #fff8e1;
-    color: #8a6d00;
-    border-radius: 6px;
-    padding: 0.5rem 0.75rem;
-    margin-bottom: 0.8rem;
-    font-size: 0.95rem;
-  }
-
-  .info {
+  .ime {
     display: flex;
-    flex-wrap: wrap;
-    gap: 1rem;
-    font-size: 0.9rem;
-    color: #555;
+    justify-content: center;
+    margin-bottom: 12px;
+  }
+
+  .cast-body {
+    padding: 30px 40px;
+    text-align: center;
+    min-height: 150px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .cast-title {
+    font-family: var(--font-serif);
+    font-size: 40px;
+    font-weight: 700;
+    color: var(--parchment-text);
+  }
+
+  .cast-kana {
+    font-size: 24px;
+    color: var(--parchment-text-sub);
+  }
+
+  .cast-romaji {
+    margin-top: 8px;
+    font-family: var(--font-mono);
+    font-size: 44px;
+    letter-spacing: 0.04em;
+  }
+
+  .cast-romaji .typed {
+    color: var(--romaji-typed);
+    font-weight: 700;
+  }
+
+  .cast-romaji .remaining {
+    color: var(--romaji-remaining);
+  }
+
+  .cast-empty {
+    font-size: 32px;
+    color: var(--parchment-text-sub);
+  }
+
+  /* 下段: 手札(中央)と山札/捨て札(右)。 */
+  .hand {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    align-items: flex-end;
+    gap: 44px;
+    padding-bottom: 16px;
+  }
+
+  .piles {
+    width: 280px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    font-size: 24px;
+    color: var(--text-faint);
+  }
+
+  /* 被弾シェイク: 自陣ブロック(下段)を一瞬だけ横に微振動させる(rAF 不使用, ADR 0008)。
+     a/b は内容同一の keyframes を2つ用意したもの。同じ animation 値の再代入はブラウザが
+     再生しないため、連続被弾でも必ず再生されるよう script 側で交互に切り替える。 */
+  @keyframes self-shake-a {
+    0%,
+    100% {
+      transform: translateX(0);
+    }
+    20% {
+      transform: translateX(-7px);
+    }
+    40% {
+      transform: translateX(6px);
+    }
+    60% {
+      transform: translateX(-4px);
+    }
+    80% {
+      transform: translateX(2px);
+    }
+  }
+
+  @keyframes self-shake-b {
+    0%,
+    100% {
+      transform: translateX(0);
+    }
+    20% {
+      transform: translateX(-7px);
+    }
+    40% {
+      transform: translateX(6px);
+    }
+    60% {
+      transform: translateX(-4px);
+    }
+    80% {
+      transform: translateX(2px);
+    }
   }
 </style>
