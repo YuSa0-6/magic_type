@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { MatchOutcome, MatchSnapshot, EndReason } from '@magic/server/engine';
   import { handleNavClick } from '../../lib/router.svelte';
+  import Button from '../../ui/Button.svelte';
+  import HpBar from '../../ui/HpBar.svelte';
 
   // 対戦リザルト画面: 確定した outcome と最終 HP を表示するだけ(整形のみ, ADR 0002)。
   // 再戦操作(スペースキー)は Match 側の window keydown で処理する。
@@ -66,156 +68,190 @@
   const resultClass = $derived(outcome.kind === 'ongoing' ? '' : outcome.kind);
 </script>
 
-<section class="result">
-  <h1 class={resultClass}>{heading}</h1>
-  {#if reason}
-    <div class="reason">{reason}</div>
-  {/if}
-
-  <div class="hp-summary">
-    <div class="hp-cell">
-      <div class="label">自分</div>
-      <div class="value self">{snapshot.self.hp}/{snapshot.self.maxHp}</div>
-    </div>
-    <div class="hp-cell">
-      <div class="label">{opponentLabel}</div>
-      <div class="value opp">{snapshot.opponent.hp}/{snapshot.opponent.maxHp}</div>
-    </div>
-  </div>
-
-  <p class="prompt">{promptText}</p>
-  {#if rematch}
-    <div class="rematch">
-      {#if rematch.selfRequested}
-        <p class="rematch-status">再戦を申し込みました。相手の応答を待っています…</p>
-      {:else}
-        {#if rematch.opponentRequested}
-          <p class="rematch-status highlight">相手が再戦を希望しています!</p>
-        {/if}
-        <p class="rematch-countdown">{rematch.countdownSeconds}</p>
-        <button type="button" class="primary" onclick={rematch.onRematch}>再戦</button>
+<div class="stage-viewport">
+  <div class="stage">
+    <section class="result">
+      <h1 class={resultClass}>{heading}</h1>
+      {#if reason}
+        <div class="reason">{reason}</div>
       {/if}
-    </div>
-  {/if}
-  <nav class="nav">
-    <a class="link" href="/deck" onclick={(e) => handleNavClick(e, 'deck')}>デッキ編集</a>
-    <a class="link" href="/" onclick={(e) => handleNavClick(e, 'home')}>ホームへ戻る</a>
-  </nav>
-</section>
+
+      <div class="hp-summary">
+        <div class="hp-cell">
+          <div class="hp-head">
+            <span class="label">自分</span>
+            <span class="value self">{snapshot.self.hp}/{snapshot.self.maxHp}</span>
+          </div>
+          <HpBar
+            hp={snapshot.self.hp}
+            maxHp={snapshot.self.maxHp}
+            side="self"
+            shield={snapshot.self.shield}
+          />
+        </div>
+        <div class="hp-cell">
+          <div class="hp-head">
+            <span class="label">{opponentLabel}</span>
+            <span class="value opp">{snapshot.opponent.hp}/{snapshot.opponent.maxHp}</span>
+          </div>
+          <HpBar
+            hp={snapshot.opponent.hp}
+            maxHp={snapshot.opponent.maxHp}
+            side="opponent"
+            shield={snapshot.opponent.shield}
+          />
+        </div>
+      </div>
+
+      <p class="prompt">{promptText}</p>
+
+      {#if rematch}
+        <div class="rematch">
+          {#if rematch.selfRequested}
+            <p class="rematch-status">再戦を申し込みました。相手の応答を待っています…</p>
+          {:else}
+            {#if rematch.opponentRequested}
+              <p class="rematch-status highlight">相手が再戦を希望しています!</p>
+            {/if}
+            <p class="rematch-countdown">{rematch.countdownSeconds}</p>
+            <Button variant="primary" onclick={rematch.onRematch}>再戦</Button>
+          {/if}
+        </div>
+      {/if}
+
+      <nav class="nav">
+        <Button variant="ghost" href="/deck" onclick={(e) => handleNavClick(e, 'deck')}
+          >デッキ編集</Button
+        >
+        <Button variant="ghost" href="/" onclick={(e) => handleNavClick(e, 'home')}
+          >ホームへ戻る</Button
+        >
+      </nav>
+    </section>
+  </div>
+</div>
 
 <style>
   .result {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 26px;
+    padding: 80px;
+    background: var(--bg-radial-top);
+    font-family: var(--font-body);
     text-align: center;
-    font-family: 'Courier New', monospace;
   }
 
   h1 {
-    font-size: 2.2rem;
-    margin-bottom: 0.3rem;
+    margin: 0;
+    font-family: var(--font-serif);
+    font-size: 110px;
+    font-weight: 800;
+    color: var(--text-heading);
   }
 
   h1.win {
-    color: #2e7d32;
+    color: var(--gold-bright);
+    text-shadow: 0 0 60px var(--gold-glow-50);
   }
 
   h1.lose {
-    color: #c62828;
+    color: var(--hp-opp-end);
   }
 
   h1.draw,
   h1.forfeit {
-    color: #777;
+    color: var(--text-faint);
   }
 
   .reason {
-    color: #555;
-    margin-bottom: 1.5rem;
+    font-size: 28px;
+    color: var(--text-body);
   }
 
   .hp-summary {
     display: flex;
-    justify-content: center;
-    gap: 2.5rem;
-    margin-bottom: 1.5rem;
+    gap: 60px;
+    width: 640px;
+    margin-top: 10px;
   }
 
-  .label {
-    font-size: 0.9rem;
-    color: #777;
+  .hp-cell {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
 
-  .value {
-    font-size: 1.8rem;
-    font-weight: bold;
+  .hp-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-family: var(--font-mono);
+  }
+
+  .hp-head .label {
+    font-size: 22px;
+    color: var(--text-faint);
+  }
+
+  .hp-head .value {
+    font-size: 32px;
+    font-weight: 700;
   }
 
   .value.self {
-    color: #2e7d32;
+    color: var(--hp-self-end);
   }
 
   .value.opp {
-    color: #c62828;
+    color: var(--hp-opp-end);
   }
 
   .prompt {
-    font-size: 1.2rem;
-    font-weight: bold;
-    color: #1565c0;
-  }
-
-  .nav {
-    margin-top: 1rem;
-    display: flex;
-    justify-content: center;
-    gap: 1.5rem;
-  }
-
-  .link {
-    color: #1565c0;
-    text-decoration: underline;
-    font-family: sans-serif;
+    margin: 10px 0 0;
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--link-purple);
   }
 
   .rematch {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 0.6rem;
-    margin: 1rem 0;
+    gap: 14px;
+    margin-top: 6px;
   }
 
   .rematch-status {
-    font-size: 1rem;
-    color: #555;
     margin: 0;
+    font-size: 22px;
+    color: var(--text-body);
   }
 
   .rematch-status.highlight {
-    color: #1565c0;
-    font-weight: bold;
+    color: var(--gold-bright);
+    font-weight: 700;
   }
 
   .rematch-countdown {
-    font-size: 2.4rem;
-    font-weight: bold;
-    color: #1565c0;
     margin: 0;
+    font-family: var(--font-mono);
+    font-size: 64px;
+    font-weight: 700;
+    color: var(--gold-bright);
+    text-shadow: 0 0 30px var(--gold-glow-50);
     font-variant-numeric: tabular-nums;
   }
 
-  .primary {
-    padding: 0.6rem 1.6rem;
-    border-radius: 6px;
-    border: none;
-    background: #1565c0;
-    color: #fff;
-    font-weight: bold;
-    font-size: 1rem;
-    font-family: 'Courier New', monospace;
-    cursor: pointer;
-  }
-
-  .primary:hover {
-    background: #0d47a1;
+  .nav {
+    display: flex;
+    gap: 16px;
+    margin-top: 16px;
   }
 </style>
