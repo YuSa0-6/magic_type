@@ -82,14 +82,24 @@
             <span class="label">自分</span>
             <span class="value self">{snapshot.self.hp}/{snapshot.self.maxHp}</span>
           </div>
-          <HpBar hp={snapshot.self.hp} maxHp={snapshot.self.maxHp} side="self" />
+          <HpBar
+            hp={snapshot.self.hp}
+            maxHp={snapshot.self.maxHp}
+            side="self"
+            shield={snapshot.self.shield}
+          />
         </div>
         <div class="hp-cell">
           <div class="hp-head">
             <span class="label">{opponentLabel}</span>
             <span class="value opp">{snapshot.opponent.hp}/{snapshot.opponent.maxHp}</span>
           </div>
-          <HpBar hp={snapshot.opponent.hp} maxHp={snapshot.opponent.maxHp} side="opponent" />
+          <HpBar
+            hp={snapshot.opponent.hp}
+            maxHp={snapshot.opponent.maxHp}
+            side="opponent"
+            shield={snapshot.opponent.shield}
+          />
         </div>
       </div>
 

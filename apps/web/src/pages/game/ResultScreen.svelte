@@ -42,18 +42,26 @@
         <div class="record-panel">
           <Panel variant="parchment">
             <div class="record">
-              <div class="record-grid">
-                <span class="col-head">カード</span>
-                <span class="col-head num">回数</span>
-                <span class="col-head num">平均詠唱</span>
-                <span class="col-head num">DMG</span>
-                {#each stats.perCard as stat (stat.cardId)}
-                  <span class="cell name">{cardName(stat.cardId)}</span>
-                  <span class="cell num">{stat.activations}</span>
-                  <span class="cell num">{formatSeconds(stat.averageCastTimeMs)}秒</span>
-                  <span class="cell num">{stat.totalDamage}</span>
-                {/each}
-              </div>
+              <table class="record-grid">
+                <thead>
+                  <tr>
+                    <th>カード</th>
+                    <th class="num">回数</th>
+                    <th class="num">平均詠唱</th>
+                    <th class="num">DMG</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each stats.perCard as stat (stat.cardId)}
+                    <tr>
+                      <td class="name">{cardName(stat.cardId)}</td>
+                      <td class="num">{stat.activations}</td>
+                      <td class="num">{formatSeconds(stat.averageCastTimeMs)}秒</td>
+                      <td class="num">{stat.totalDamage}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
               <div class="record-footer">総誤入力 {stats.totalMistypes}</div>
             </div>
           </Panel>
@@ -139,33 +147,55 @@
   }
 
   .record {
+    padding: 30px 40px;
     color: var(--parchment-text);
   }
 
   .record-grid {
-    display: grid;
-    grid-template-columns: 1fr 110px 150px 110px;
-    gap: 14px 0;
+    width: 100%;
+    border-collapse: collapse;
     font-size: 26px;
   }
 
-  .col-head {
+  .record-grid th,
+  .record-grid td {
+    padding: 7px 0;
+    text-align: left;
+    font-weight: 400;
+  }
+
+  .record-grid th {
     font-size: 22px;
     color: var(--parchment-text-sub);
   }
 
-  .col-head.num,
-  .cell.num {
+  .record-grid th.num,
+  .record-grid td.num {
     text-align: right;
   }
 
-  .cell.name {
+  .record-grid td.name {
     font-family: var(--font-serif);
     font-weight: 700;
   }
 
-  .cell.num {
+  .record-grid td.num {
     font-family: var(--font-mono);
+  }
+
+  .record-grid th:nth-child(2),
+  .record-grid td:nth-child(2) {
+    width: 110px;
+  }
+
+  .record-grid th:nth-child(3),
+  .record-grid td:nth-child(3) {
+    width: 150px;
+  }
+
+  .record-grid th:nth-child(4),
+  .record-grid td:nth-child(4) {
+    width: 110px;
   }
 
   .record-footer {
