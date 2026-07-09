@@ -37,6 +37,10 @@
 
   // CD ゲージは「回復の進捗」を 0→1 で表す。timers は残り時間なので 1 から引いて反転する。
   // 進捗率の割り算は pages 側で行い、Card には算出済みの値だけ渡す(ADR 0006)。
+  // 注意: 分母に手札カード自身の cooldownMs を使っているのは、タイムアタック
+  // エンジン(battle.ts)が全カード共通の cooldownMs=1500 かつ haste/slow を
+  // 持たないため。対戦(vs ボット/オンライン)は cooldownMs が異なるカードや
+  // 加速/鈍化効果を持ちうるので、この式をそのまま MatchBattleScreen へ流用しない。
   function cooldownRecovery(card: CardModel): number | undefined {
     if (timers.cooldownRemainingMs <= 0) return undefined;
     return 1 - timers.cooldownRemainingMs / card.cooldownMs;
@@ -88,7 +92,7 @@
                 >
               </div>
             {:else}
-              <div class="cast-empty">カードを選択してください(1〜4キー / クリック)</div>
+              <div class="cast-empty">カードを選択してください(左から 1〜4 キー / クリック)</div>
             {/if}
           </div>
         </Panel>
@@ -97,8 +101,14 @@
       <!-- 下段: 詳細情報(左)・手札4枚(中央)・山札/捨て札(右) -->
       <footer class="bottom">
         <div class="side-info left">
-          <span class="info-label">誤入力</span>
-          <span class="info-num">{state.castMistypes}</span>
+          <div>
+            <span class="info-label">誤入力</span>
+            <span class="info-num">{state.castMistypes}</span>
+          </div>
+          <div>
+            <span class="info-label">CD残り</span>
+            <span class="info-num">{formatSeconds(timers.cooldownRemainingMs)}秒</span>
+          </div>
         </div>
 
         <div class="hand">
