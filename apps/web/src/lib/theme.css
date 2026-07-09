@@ -1,0 +1,102 @@
+:root {
+  /* 背景(夜空) */
+  --bg-radial-top: radial-gradient(ellipse at 50% -10%, #332757 0%, #1c1633 55%, #120e22 100%);
+  --bg-radial-battle: radial-gradient(ellipse at 50% 120%, #332757 0%, #1c1633 55%, #120e22 100%);
+
+  /* テキスト */
+  --text-heading: #f2ecdb;
+  --text-body: #b8b0cf;
+  --text-faint: #9a90b5;
+  --text-faintest: #7f7699;
+
+  /* 金 */
+  --gold: #c9a35a;
+  --gold-bright: #e8c274;
+  --gold-glow-25: rgba(201, 163, 90, 0.25);
+  --gold-glow-50: rgba(201, 163, 90, 0.5);
+
+  /* 紫(プライマリ) */
+  --purple-border: #7a6fc4;
+  --purple-grad-start: #8a76d6;
+  --purple-grad-end: #6a58b8;
+  --link-purple: #b9aef0;
+
+  /* 非活性枠 */
+  --border-dim: #4c4370;
+  --border-card: #6b6280;
+
+  /* 羊皮紙 */
+  --parchment-start: #f7f2e4;
+  --parchment-end: #ece3cb;
+  --parchment-gold-start: #f9f3e0;
+  --parchment-gold-end: #f0e6c8;
+  --parchment-text: #2b2438;
+  --parchment-text-sub: #7d7490;
+  --parchment-effect-text: #8a6d1f;
+
+  /* HP */
+  --hp-self-start: #3f8f5f;
+  --hp-self-end: #6fae83;
+  --hp-self-glow: rgba(111, 174, 131, 0.6);
+  --hp-opp-start: #a83c34;
+  --hp-opp-end: #d0645c;
+  --hp-opp-glow: rgba(208, 100, 92, 0.6);
+
+  /* ジェム */
+  --gem-atk-start: #d0645c;
+  --gem-atk-end: #a83c34;
+  --gem-len-start: #8d80d8;
+  --gem-len-end: #5a4bab;
+
+  /* ローマ字ガイド */
+  --romaji-typed: #2f7d4a;
+  --romaji-remaining: #a79d8c;
+
+  /* ステータスバッジ */
+  --status-ok: #6fae83;
+  --status-warning-text: #e8c274;
+  --status-warning-bg: rgba(232, 194, 116, 0.12);
+  --status-warning-border: rgba(232, 194, 116, 0.5);
+  --status-slow-text: #c98a84;
+  --status-slow-bg: rgba(201, 138, 132, 0.14);
+  --status-shield-text: #8fb4e8;
+  --status-shield-bg: rgba(143, 180, 232, 0.14);
+  --status-haste-text: #8fe8b0;
+  --status-haste-bg: rgba(143, 232, 176, 0.12);
+
+  /* タイポグラフィ */
+  --font-serif: 'Shippori Mincho', serif;
+  --font-body: 'Zen Kaku Gothic New', sans-serif;
+  --font-mono: 'M PLUS 1 Code', monospace;
+
+  /* 形状 */
+  --radius-card: 10px;
+  --radius-panel: 16px;
+  --radius-pill: 999px;
+  --card-border-w: 2.5px;
+  --card-border-w-selected: 3px;
+
+  /* 基準解像度スケーリング */
+  --stage-scale: min(calc(100vw / 1920px), calc(100vh / 1080px));
+}
+
+.stage-viewport {
+  /* position: fixed (not min-height: 100vh) is load-bearing: .stage keeps its
+     untransformed 1920x1080 layout box (CSS transforms don't shrink layout size),
+     so a normal-flow ancestor sized by content would balloon to 1080px tall on any
+     viewport shorter than that and clip/scroll instead of fitting. Fixed positioning
+     pins this to the viewport regardless of the child's box, matching the technique
+     validated in the design handoff's Battle Prototype.dc.html. */
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.stage {
+  width: 1920px;
+  height: 1080px;
+  flex: none;
+  transform: scale(var(--stage-scale));
+}
