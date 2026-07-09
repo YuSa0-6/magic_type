@@ -34,6 +34,8 @@
   let imeWarning = $state(false);
   // ロビー操作中フラグ(二重押し抑止)。
   let busy = $state(false);
+  // 再戦カウントダウン(#17)。決着中だけ 10→0 へ表示上カウントする(強制遷移はしない)。
+  let rematchCountdown = $state(10);
 
   // 効果音のミュート状態(ADR 0002: 状態は親が sound モジュール経由で保持し props で渡す)。
   let muted = $state(sound.isMuted());
@@ -142,6 +144,20 @@
     return () => transport.leave();
   });
 
+  // 再戦カウントダウン(#17)。transport.phase === 'ended' の間だけ 1 秒ごとに減らし 0 でクランプ。
+  // これは表示上の心理的な目安に過ぎず、0 になっても強制キャンセル・ホームへの自動遷移はしない。
+  $effect(() => {
+    if (transport.phase !== 'ended') {
+      rematchCountdown = 10;
+      return;
+    }
+    rematchCountdown = 10;
+    const id = setInterval(() => {
+      rematchCountdown = Math.max(0, rematchCountdown - 1);
+    }, 1000);
+    return () => clearInterval(id);
+  });
+
   // 表示用スナップショット: 自陣の打鍵フィードバックは予測、HP/効果/相手/勝敗は権威。
   // 予測がまだ無ければ権威 state をそのまま使う(再接続直後の回復など)。
   //
@@ -220,6 +236,11 @@
     return '対戦開始の準備中…';
   });
 
+  // 再戦に同意する(#17)。両者が同意すると新しい matchStart が届き、predictor が作り直される。
+  function handleRematch(): void {
+    transport.requestRematch();
+  }
+
   // カードクリック(自陣のみ)。予測へ反映し、サーバーへも送る。
   function handleSelectCard(handIndex: number): void {
     if (predictor === null) return;
@@ -236,6 +257,16 @@
 
   // window keydown を一元処理する(対戦中の自陣入力のみ)。Match.svelte と同じ規約。
   function handleKeydown(e: KeyboardEvent): void {
+    if (transport.phase === 'ended') {
+      if (e.isComposing || e.keyCode === 229 || e.ctrlKey || e.metaKey || e.altKey || e.repeat) {
+        return;
+      }
+      if (e.key === ' ') {
+        e.preventDefault();
+        handleRematch();
+      }
+      return;
+    }
     if (transport.phase !== 'matched' || predictor === null) {
       return;
     }
@@ -351,6 +382,12 @@
     snapshot={displaySnapshot}
     opponentLabel="相手"
     promptText="対戦が終了しました"
+    rematch={{
+      countdownSeconds: rematchCountdown,
+      selfRequested: transport.rematchSelfRequested,
+      opponentRequested: transport.rematchOpponentRequested,
+      onRematch: handleRematch,
+    }}
   />
 {:else if displaySnapshot && transport.authState}
   <!-- 対戦中(matched / ended で displaySnapshot がまだ結果未確定の遷移含む) -->

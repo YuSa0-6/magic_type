@@ -38,6 +38,10 @@ describe('parseClientMessage(クライアントメッセージ検証)', () => {
     expect(parseClientMessage({ type: 'ready' })).toEqual({ type: 'ready' });
   });
 
+  it('rematchRequest を受理する(再戦, ADR 0011 #17)', () => {
+    expect(parseClientMessage({ type: 'rematchRequest' })).toEqual({ type: 'rematchRequest' });
+  });
+
   it('input(select / press の混在バッチ)を受理する', () => {
     const commands = [
       { kind: 'select', handIndex: 2, atMs: 100 },
