@@ -1,10 +1,16 @@
 <script lang="ts">
-  import type { MatchSnapshot, MatchTimers, Card as CardModel } from '@magic/server/engine';
+  import type {
+    MatchSnapshot,
+    MatchTimers,
+    Card as CardModel,
+    ActiveEffectView,
+  } from '@magic/server/engine';
   import Card from '../../ui/Card.svelte';
   import HpBar from '../../ui/HpBar.svelte';
   import Panel from '../../ui/Panel.svelte';
   import StatusBadge from '../../ui/StatusBadge.svelte';
   import { formatSeconds } from '../../lib/format';
+  import { HAND_ROTATIONS } from '../../lib/card-format';
 
   // 対戦バトル画面: 2 陣営のスナップショットを表示するだけの薄い皮(ADR 0002)。
   // 業務ロジックは持たず、カードクリックは親へ通知するのみ。自陣のみ操作可能。
@@ -50,38 +56,53 @@
     return kind === 'haste' ? '加速' : '鈍化';
   }
 
-  // 自陣手札の扇配置と、相手伏せ札の逆さ扇(180±数度)。呼び出し側で角度を決めて Card に渡す。
-  const HAND_ROTATIONS = [-6, -2, 2, 6];
+  // 相手伏せ札の逆さ扇(180±数度)。呼び出し側で角度を決めて Card に渡す。
   const OPP_HAND_ROTATIONS = [176, 179, 181, 184];
 
-  // CD ゲージは「回復の進捗」を 0→1 で表す。selfCooldownRemainingMs を card.cooldownMs で割って反転する。
-  // 注意: 分母に card.cooldownMs を使うのは近似。全カード cooldownMs=1500ms 統一の現状では実害ないが、
-  // haste/slow 適用中は実効 CD が card.cooldownMs からズレるため、ゲージも多少ズレる。エンジンが
-  // 実効 CD(effectiveCdMs)を MatchTimers/ActiveEffectView で公開すれば正確化できる。
+  // CD ゲージは「回復の進捗」を 0→1 で表す。selfCooldownRemainingMs を実効 CD 時間で割って反転する。
+  // 実効 CD 時間はエンジン内部にしか無い(MatchTimers/ActiveEffectView は公開しない)ため、
+  // 現在アクティブな haste/slow から近似する(エンジンの cdDeltaAt と同じ考え方)。CD 開始後に
+  // 効果が新たに切れる/入れ替わると近似はズレるが、card.cooldownMs 固定(旧実装)は haste/slow 中
+  // 必ず不正確(進捗が負になりゲージが消える等)だったのに対し、これは実態に近い次善策。
+  function estimatedCooldownTotalMs(card: CardModel): number {
+    let delta = 0;
+    for (const eff of self.activeEffects) {
+      delta += eff.kind === 'haste' ? -eff.ms : eff.ms;
+    }
+    return Math.max(1, card.cooldownMs + delta);
+  }
+
   function cooldownRecovery(card: CardModel): number | undefined {
     if (timers.selfCooldownRemainingMs <= 0) return undefined;
-    return 1 - timers.selfCooldownRemainingMs / card.cooldownMs;
+    return 1 - timers.selfCooldownRemainingMs / estimatedCooldownTotalMs(card);
   }
 
-  // 被弾シェイク(README「自分側が一瞬シェイク」)。自陣 HP の減少を検知して class を付け、
-  // animation 終了で自動的に外す(rAF は使わない, ADR 0008)。prevSelfHp は描画に使わない履歴。
-  // このページ限定の演出なので共通部品化せずトップレベルに閉じる。HpBar の赤/青フラッシュは
-  // HpBar 内部が別途担うため、ここでは footer を {#key} で貼り直さず class トグルに留める
-  // (貼り直すと HpBar が再マウントされ内部のフラッシュ検知履歴が消える)。
+  // 被弾シェイク(README「自分側が一瞬シェイク」)。自陣 HP の減少を検知して seq をインクリメント。
+  // rAF は使わない(ADR 0008)。prevSelfHp は描画に使わない履歴。このページ限定の演出なので
+  // 共通部品化せずトップレベルに閉じる。footer を {#key} で貼り直すと中の HpBar が再マウントされ
+  // 内部のフラッシュ検知履歴が消えるため、footer 自体は再マウントしない。代わりに同一 seq が
+  // 連続する短い間隔での再被弾でも必ずアニメーションが再生されるよう、奇数/偶数 seq で名前違いの
+  // 同一 keyframes を交互に割り当てる(同じ animation 値の再代入はブラウザが再生しないため)。
   let prevSelfHp: number | null = null;
-  let shaking = $state(false);
+  let shakeSeq = $state(0);
   $effect(() => {
     const cur = self.hp;
-    if (prevSelfHp !== null && cur < prevSelfHp) shaking = true;
+    if (prevSelfHp !== null && cur < prevSelfHp) shakeSeq += 1;
     prevSelfHp = cur;
   });
-
-  // 子(Card の CD フラッシュ・HpBar のフラッシュ)の animationend もバブリングで届くため、
-  // footer 自身の self-shake が終わったときだけ解除する。
-  function handleShakeEnd(e: AnimationEvent): void {
-    if (e.target === e.currentTarget) shaking = false;
-  }
+  const shakeStyle = $derived(
+    shakeSeq === 0 ? '' : `animation: self-shake-${shakeSeq % 2 === 0 ? 'b' : 'a'} 0.4s ease-out;`
+  );
 </script>
+
+{#snippet statusBadges(effects: readonly ActiveEffectView[], shield: number)}
+  {#each effects as eff (eff.kind)}
+    <StatusBadge variant={eff.kind} label={effectLabel(eff.kind)} />
+  {/each}
+  {#if shield > 0}
+    <StatusBadge variant="shield" label={`盾 ${shield}`} />
+  {/if}
+{/snippet}
 
 <div class="stage-viewport">
   <div class="stage">
@@ -98,12 +119,7 @@
         <div class="side-info opponent">
           <div class="info-head">
             <span class="who">{opponentLabel}</span>
-            {#each opponent.activeEffects as eff (eff.kind)}
-              <StatusBadge variant={eff.kind} label={effectLabel(eff.kind)} />
-            {/each}
-            {#if opponent.shield > 0}
-              <StatusBadge variant="shield" label={`盾 ${opponent.shield}`} />
-            {/if}
+            {@render statusBadges(opponent.activeEffects, opponent.shield)}
             <span class="hp-num">{opponent.hp}/{opponent.maxHp}</span>
           </div>
           <HpBar hp={opponent.hp} maxHp={opponent.maxHp} side="opponent" shield={opponent.shield} />
@@ -124,6 +140,9 @@
           <div class="opp-cast">
             {#if opponent.selectedIndex !== null}
               詠唱中… 進捗 {opponent.typedRomaji.length} 文字
+              <span class="opp-cd"
+                >(クールダウン {formatSeconds(timers.opponentCooldownRemainingMs)}秒)</span
+              >
             {:else}
               構え中…
             {/if}
@@ -175,16 +194,11 @@
       </div>
 
       <!-- 下段: 自陣情報(左)・手札4枚(中央)・山札/捨て札(右)。被弾でシェイクする。 -->
-      <footer class="bottom" class:shaking onanimationend={handleShakeEnd}>
+      <footer class="bottom" style={shakeStyle}>
         <div class="side-info self">
           <div class="info-head">
             <span class="who">自分</span>
-            {#each self.activeEffects as eff (eff.kind)}
-              <StatusBadge variant={eff.kind} label={effectLabel(eff.kind)} />
-            {/each}
-            {#if self.shield > 0}
-              <StatusBadge variant="shield" label={`盾 ${self.shield}`} />
-            {/if}
+            {@render statusBadges(self.activeEffects, self.shield)}
             <span class="hp-num">{self.hp}/{self.maxHp}</span>
           </div>
           <HpBar hp={self.hp} maxHp={self.maxHp} side="self" shield={self.shield} />
@@ -316,6 +330,10 @@
     text-align: center;
   }
 
+  .opp-cd {
+    color: var(--text-faintest);
+  }
+
   /* 残り時間 + ミュート(右上)。 */
   .clock {
     width: 280px;
@@ -438,12 +456,29 @@
     color: var(--text-faint);
   }
 
-  /* 被弾シェイク: 自陣ブロック(下段)を一瞬だけ横に微振動させる(rAF 不使用, ADR 0008)。 */
-  .bottom.shaking {
-    animation: self-shake 0.4s ease-out;
+  /* 被弾シェイク: 自陣ブロック(下段)を一瞬だけ横に微振動させる(rAF 不使用, ADR 0008)。
+     a/b は内容同一の keyframes を2つ用意したもの。同じ animation 値の再代入はブラウザが
+     再生しないため、連続被弾でも必ず再生されるよう script 側で交互に切り替える。 */
+  @keyframes self-shake-a {
+    0%,
+    100% {
+      transform: translateX(0);
+    }
+    20% {
+      transform: translateX(-7px);
+    }
+    40% {
+      transform: translateX(6px);
+    }
+    60% {
+      transform: translateX(-4px);
+    }
+    80% {
+      transform: translateX(2px);
+    }
   }
 
-  @keyframes self-shake {
+  @keyframes self-shake-b {
     0%,
     100% {
       transform: translateX(0);
