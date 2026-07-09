@@ -160,6 +160,13 @@
     return () => transport.leave();
   });
 
+  // 画面離脱時にコピーボタンの一時フィードバック用タイマーが生きていれば止める。
+  $effect(() => {
+    return () => {
+      if (codeCopiedTimeoutId !== null) clearTimeout(codeCopiedTimeoutId);
+    };
+  });
+
   // 再戦カウントダウン(#17)。transport.phase === 'ended' の間だけ 1 秒ごとに減らし 0 でクランプ。
   // これは表示上の心理的な目安に過ぎず、0 になっても強制キャンセル・ホームへの自動遷移はしない。
   $effect(() => {
@@ -458,6 +465,7 @@
   <MatchBattleScreen
     snapshot={displaySnapshot}
     timers={transport.authState.timers}
+    nowMs={now()}
     {imeWarning}
     onSelectCard={handleSelectCard}
     opponentLabel="相手"
