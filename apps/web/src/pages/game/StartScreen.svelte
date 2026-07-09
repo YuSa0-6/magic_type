@@ -15,6 +15,8 @@
 
 <style>
   .start {
+    padding: 1rem;
+    box-sizing: border-box;
     text-align: center;
   }
 

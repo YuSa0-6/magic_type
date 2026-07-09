@@ -54,6 +54,8 @@
 
 <style>
   .result {
+    padding: 1rem;
+    box-sizing: border-box;
     text-align: center;
     font-family: 'Courier New', monospace;
   }
