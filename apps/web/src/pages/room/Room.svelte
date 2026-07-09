@@ -7,6 +7,9 @@
   import * as sound from '../../lib/sound.svelte';
   import MatchBattleScreen from '../match/MatchBattleScreen.svelte';
   import MatchResultScreen from '../match/MatchResultScreen.svelte';
+  import Panel from '../../ui/Panel.svelte';
+  import Button from '../../ui/Button.svelte';
+  import StatusBadge from '../../ui/StatusBadge.svelte';
 
   // オンライン対戦の親(B3 web 配線, ADR 0011 #1/#2/#5/#6/#8/#9)。
   //
@@ -36,6 +39,9 @@
   let busy = $state(false);
   // 再戦カウントダウン(#17)。決着中だけ 10→0 へ表示上カウントする(強制遷移はしない)。
   let rematchCountdown = $state(10);
+  // ルームコードのコピーボタンの一時フィードバック表示(ロビー②待機画面)。
+  let codeCopied = $state(false);
+  let codeCopiedTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
   // 効果音のミュート状態(ADR 0002: 状態は親が sound モジュール経由で保持し props で渡す)。
   let muted = $state(sound.isMuted());
@@ -84,6 +90,22 @@
     // ロビーのボタン操作(ユーザージェスチャ)で音システムを起動(ADR 0012)。
     sound.resume();
     transport.connect(code, selfDeckIds());
+  }
+
+  // ルームコードをクリップボードへコピーする(ロビー②待機画面のコピーボタン)。
+  // 失敗(非対応環境・許可拒否)は静かに無視し、フィードバック表示のみ出さない。
+  async function handleCopyCode(): Promise<void> {
+    if (!transport.code) return;
+    try {
+      await navigator.clipboard.writeText(transport.code);
+    } catch {
+      return;
+    }
+    codeCopied = true;
+    if (codeCopiedTimeoutId !== null) clearTimeout(codeCopiedTimeoutId);
+    codeCopiedTimeoutId = setTimeout(() => {
+      codeCopied = false;
+    }, 1500);
   }
 
   // matchStart / matchResumed を受けたら予測エンジンを(再)初期化する。
@@ -310,59 +332,113 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if transport.phase === 'idle'}
-  <!-- ロビー: 部屋を作る / コードで参加 -->
-  <section class="room">
-    <h1>オンライン対戦</h1>
-    <div class="panels">
-      <div class="panel">
-        <h2>部屋を作る</h2>
-        <p>部屋を作成してコードを発行し、相手の参加を待ちます。</p>
-        <button type="button" class="primary" onclick={createRoom} disabled={busy}
-          >部屋を作る</button
-        >
-      </div>
-      <div class="panel">
-        <h2>コードで参加</h2>
-        <p>相手から共有されたルームコードを入力して参加します。</p>
-        <input
-          type="text"
-          placeholder="ルームコード"
-          bind:value={joinCode}
-          aria-label="ルームコード"
-        />
-        <button type="button" class="primary" onclick={joinRoom} disabled={busy}>参加する</button>
-      </div>
+  <!-- ロビー①: 部屋を作る / コードで参加 -->
+  <div class="stage-viewport">
+    <div class="stage">
+      <section class="room">
+        <h1>オンライン対戦</h1>
+        <div class="gate-panels">
+          <div class="gate-slot">
+            <Panel variant="gold">
+              <div class="gate">
+                <div class="gate-icon" aria-hidden="true">門</div>
+                <h2>部屋を作る</h2>
+                <p>部屋を作成してコードを発行し、相手の参加を待ちます。</p>
+                <Button variant="primary" onclick={createRoom} disabled={busy}>部屋を作る</Button>
+              </div>
+            </Panel>
+          </div>
+          <div class="gate-slot">
+            <Panel variant="gold">
+              <div class="gate">
+                <div class="gate-icon" aria-hidden="true">鍵</div>
+                <h2>コードで参加</h2>
+                <p>相手から共有されたルームコードを入力して参加します。</p>
+                <input
+                  type="text"
+                  class="code-input"
+                  placeholder="______"
+                  bind:value={joinCode}
+                  aria-label="ルームコード"
+                />
+                <Button variant="primary" onclick={joinRoom} disabled={busy}>参加する</Button>
+              </div>
+            </Panel>
+          </div>
+        </div>
+        <nav class="nav">
+          <Button variant="ghost" href="/match" onclick={(e) => handleNavClick(e, 'match')}
+            >vsボットで練習</Button
+          >
+          <Button variant="ghost" href="/deck" onclick={(e) => handleNavClick(e, 'deck')}
+            >デッキ編集</Button
+          >
+          <Button variant="ghost" href="/" onclick={(e) => handleNavClick(e, 'home')}
+            >ホームへ戻る</Button
+          >
+        </nav>
+      </section>
     </div>
-    <nav class="nav">
-      <a class="link" href="/match" onclick={(e) => handleNavClick(e, 'match')}>vsボットで練習</a>
-      <a class="link" href="/deck" onclick={(e) => handleNavClick(e, 'deck')}>デッキ編集</a>
-      <a class="link" href="/" onclick={(e) => handleNavClick(e, 'home')}>ホームへ戻る</a>
-    </nav>
-  </section>
+  </div>
 {:else if transport.phase === 'connecting' || transport.phase === 'waiting'}
-  <!-- 接続 / 相手待ち -->
-  <section class="room">
-    <h1>オンライン対戦</h1>
-    {#if transport.code}
-      <div class="code-box">
-        ルームコード: <strong>{transport.code}</strong>
-        <p class="hint">このコードを相手に共有してください。</p>
-      </div>
-    {/if}
-    <div class="waiting">{waitingMessage}</div>
-    <nav class="nav">
-      <a class="link" href="/" onclick={(e) => handleNavClick(e, 'home')}>キャンセルして戻る</a>
-    </nav>
-  </section>
+  <!-- ロビー②: 接続 / 相手待ち -->
+  <div class="stage-viewport">
+    <div class="stage">
+      <section class="room">
+        <h1>オンライン対戦</h1>
+        {#if transport.code}
+          <div class="code-slot">
+            <Panel variant="gold">
+              <div class="code-content">
+                <p class="code-caption">ルームコード — 相手に共有</p>
+                <div class="code-value">{transport.code}</div>
+                <button type="button" class="copy-btn" onclick={handleCopyCode}>
+                  {codeCopied ? 'コピーしました' : 'コピー 📋'}
+                </button>
+              </div>
+            </Panel>
+          </div>
+        {/if}
+        <div class="ready-cards">
+          <div class="ready-card">
+            <div class="ready-icon" aria-hidden="true"></div>
+            <div class="ready-name">あなた</div>
+            <div class="ready-status">✓ 準備完了</div>
+          </div>
+          <div class="ready-card" class:pending={!transport.opponentPresent}>
+            <div class="ready-icon" aria-hidden="true"></div>
+            <div class="ready-name">相手</div>
+            {#if transport.opponentPresent}
+              <div class="ready-status">✓ 準備完了</div>
+            {:else}
+              <div class="ready-status pending">参加待ち… ⏳</div>
+            {/if}
+          </div>
+        </div>
+        <p class="waiting-message">{waitingMessage}</p>
+        <nav class="nav">
+          <Button variant="ghost" href="/" onclick={(e) => handleNavClick(e, 'home')}
+            >キャンセルして戻る</Button
+          >
+        </nav>
+      </section>
+    </div>
+  </div>
 {:else if transport.phase === 'error'}
   <!-- 復帰不能エラー -->
-  <section class="room">
-    <h1>オンライン対戦</h1>
-    <div class="error" role="alert">{transport.errorMessage ?? 'エラーが発生しました'}</div>
-    <nav class="nav">
-      <a class="link" href="/" onclick={(e) => handleNavClick(e, 'home')}>ホームへ戻る</a>
-    </nav>
-  </section>
+  <div class="stage-viewport">
+    <div class="stage">
+      <section class="room">
+        <h1>オンライン対戦</h1>
+        <StatusBadge variant="warning" label={transport.errorMessage ?? 'エラーが発生しました'} />
+        <nav class="nav">
+          <Button variant="ghost" href="/" onclick={(e) => handleNavClick(e, 'home')}
+            >ホームへ戻る</Button
+          >
+        </nav>
+      </section>
+    </div>
+  </div>
 {:else if transport.phase === 'ended' && finalOutcome && displaySnapshot}
   <!-- 結果 -->
   <MatchResultScreen
@@ -391,123 +467,234 @@
   />
 {:else}
   <!-- matchStart 直後で最初の state がまだ届いていない -->
-  <section class="room">
-    <h1>オンライン対戦</h1>
-    <div class="waiting">対戦開始…</div>
-  </section>
+  <div class="stage-viewport">
+    <div class="stage">
+      <section class="room">
+        <h1>オンライン対戦</h1>
+        <p class="transition-text">対戦開始…</p>
+      </section>
+    </div>
+  </div>
 {/if}
 
 <style>
   .room {
+    box-sizing: border-box;
     width: 100%;
-    max-width: 640px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 48px;
+    padding: 80px;
+    background: var(--bg-radial-top);
+    font-family: var(--font-body);
     text-align: center;
-    font-family: sans-serif;
   }
 
   h1 {
-    font-size: 1.8rem;
-    color: #333;
-  }
-
-  .panels {
-    display: flex;
-    gap: 1rem;
-    justify-content: center;
-    flex-wrap: wrap;
-    margin-top: 1.5rem;
-  }
-
-  .panel {
-    flex: 1;
-    min-width: 220px;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    padding: 1.2rem;
-    background: #fafafa;
-  }
-
-  h2 {
-    font-size: 1.1rem;
-    color: #444;
-    margin-top: 0;
-  }
-
-  .panel p {
-    color: #666;
-    font-size: 0.9rem;
-    min-height: 2.6em;
-  }
-
-  input {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 0.5rem;
-    border: 1px solid #bbb;
-    border-radius: 6px;
-    margin-bottom: 0.8rem;
-    font-size: 1rem;
-  }
-
-  .primary {
-    width: 100%;
-    padding: 0.6rem;
-    border-radius: 6px;
-    border: none;
-    background: #1565c0;
-    color: #fff;
-    font-weight: bold;
-    font-size: 1rem;
-    cursor: pointer;
-  }
-
-  .primary:disabled {
-    background: #9bbce0;
-    cursor: default;
-  }
-
-  .code-box {
-    margin: 1.5rem 0;
-    font-size: 1.1rem;
-    color: #333;
-  }
-
-  .code-box strong {
-    font-size: 1.6rem;
-    letter-spacing: 2px;
-    color: #1565c0;
-  }
-
-  .code-box .hint {
-    font-size: 0.85rem;
-    color: #777;
-    margin-top: 0.4rem;
-  }
-
-  .waiting {
-    margin: 2rem 0;
-    font-size: 1.1rem;
-    color: #555;
-  }
-
-  .error {
-    background: #fdecea;
-    border: 1px solid #f5b5ae;
-    color: #b3261e;
-    border-radius: 6px;
-    padding: 0.7rem 1rem;
-    margin: 1.5rem 0;
+    margin: 0;
+    font-family: var(--font-serif);
+    font-size: 64px;
+    font-weight: 800;
+    color: var(--text-heading);
   }
 
   .nav {
-    margin-top: 1.5rem;
     display: flex;
     justify-content: center;
-    gap: 1.5rem;
+    gap: 16px;
+    flex-wrap: wrap;
   }
 
-  .link {
-    color: #1565c0;
-    text-decoration: underline;
+  /* ロビー①: 門型パネル2枚。 */
+  .gate-panels {
+    display: flex;
+    gap: 48px;
+  }
+
+  .gate-slot {
+    width: 480px;
+  }
+
+  .gate {
+    box-sizing: border-box;
+    padding: 48px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 24px;
+  }
+
+  .gate-icon {
+    width: 120px;
+    height: 120px;
+    flex: none;
+    border-radius: 50% 50% 12px 12px;
+    border: 2.5px solid var(--gold);
+    background: repeating-linear-gradient(-45deg, #241d40 0 10px, #2a2249 10px 20px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 18px;
+    color: var(--gold);
+  }
+
+  .gate h2 {
+    margin: 0;
+    font-family: var(--font-serif);
+    font-size: 38px;
+    font-weight: 700;
+    color: var(--text-heading);
+  }
+
+  .gate p {
+    margin: 0;
+    font-size: 24px;
+    color: var(--text-body);
+    min-height: 2.4em;
+  }
+
+  .code-input {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 18px;
+    border: 2px dashed var(--border-dim);
+    border-radius: 12px;
+    background: transparent;
+    font-family: var(--font-mono);
+    font-size: 30px;
+    letter-spacing: 0.3em;
+    text-align: center;
+    color: var(--text-heading);
+  }
+
+  .code-input::placeholder {
+    color: var(--text-faintest);
+  }
+
+  .code-input:focus-visible {
+    outline: none;
+    border-color: var(--purple-border);
+  }
+
+  /* ロビー②: ルームコード表示(金パネル)。 */
+  .code-slot {
+    width: 640px;
+  }
+
+  .code-content {
+    box-sizing: border-box;
+    padding: 36px 60px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .code-caption {
+    margin: 0;
+    font-size: 24px;
+    color: var(--text-body);
+  }
+
+  .code-value {
+    font-family: var(--font-mono);
+    font-size: 80px;
+    font-weight: 700;
+    letter-spacing: 0.25em;
+    color: var(--gold-bright);
+    text-shadow: 0 0 40px var(--gold-glow-50);
+  }
+
+  .copy-btn {
+    font-family: var(--font-body);
+    font-size: 22px;
+    color: var(--link-purple);
+    border: 1.5px solid var(--purple-border);
+    border-radius: var(--radius-pill);
+    padding: 8px 28px;
+    background: transparent;
+    cursor: pointer;
+    transition: box-shadow 0.12s ease-out;
+  }
+
+  .copy-btn:hover,
+  .copy-btn:focus-visible {
+    box-shadow: 0 0 18px rgba(122, 111, 196, 0.35);
+    outline: none;
+  }
+
+  /* ロビー②: あなた/相手の準備状況カード。 */
+  .ready-cards {
+    display: flex;
+    gap: 36px;
+  }
+
+  .ready-card {
+    box-sizing: border-box;
+    width: 340px;
+    padding: 32px;
+    border-radius: var(--radius-panel);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    border: 2px solid var(--hp-self-end);
+    background: rgba(111, 174, 131, 0.08);
+  }
+
+  .ready-card.pending {
+    border: 2px dashed var(--border-dim);
+    background: transparent;
+  }
+
+  .ready-icon {
+    width: 90px;
+    height: 90px;
+    border-radius: 50%;
+    border: 2.5px solid var(--hp-self-end);
+    background: repeating-linear-gradient(-45deg, #241d40 0 9px, #2a2249 9px 18px);
+  }
+
+  .ready-card.pending .ready-icon {
+    border: 2.5px dashed var(--border-dim);
+    background: none;
+  }
+
+  .ready-name {
+    font-family: var(--font-serif);
+    font-size: 30px;
+    font-weight: 700;
+    color: var(--text-heading);
+  }
+
+  .ready-card.pending .ready-name {
+    color: var(--text-faint);
+  }
+
+  .ready-status {
+    font-size: 24px;
+    color: var(--hp-self-end);
+  }
+
+  .ready-status.pending {
+    color: var(--text-faintest);
+  }
+
+  .waiting-message {
+    margin: 0;
+    font-size: 24px;
+    color: var(--text-body);
+  }
+
+  /* matchStart 直後の中間状態。 */
+  .transition-text {
+    margin: 0;
+    font-family: var(--font-serif);
+    font-size: 40px;
+    color: var(--gold-bright);
   }
 </style>
