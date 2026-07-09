@@ -69,6 +69,13 @@
   const deckBadgeClass = $derived(
     deckCount !== undefined && deckCount >= maxPerCard ? 'full' : isEffect ? 'effect' : 'normal'
   );
+
+  // スクリーンリーダー向け: 見た目のジェム表示に相当する情報を読み上げ文言にも含める。
+  const cardAriaLabel = $derived(
+    card
+      ? `${card.name} ダメージ${card.damage}${effectText ? ` ${effectText}` : ''}${cooling ? ' クールダウン中' : ''}`
+      : undefined
+  );
 </script>
 
 {#snippet inner()}
@@ -99,7 +106,7 @@
     class:cooling
     class:interactive
     style={rootStyle}
-    aria-label={card?.name}
+    aria-label={cardAriaLabel}
     onclick={onSelect}
   >
     {@render inner()}
