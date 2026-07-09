@@ -184,3 +184,60 @@ export const EFFECT_CARDS: readonly Card[] = [
     effects: [{ kind: 'sift', count: 3 }],
   },
 ];
+
+/**
+ * クイックカード 5 枚(CONTEXT.md「クイックカード」)。
+ * 詠唱が非常に短い純攻撃。絶対ダメージ(カードダメージ)は小さいが damage/打鍵 の効率は
+ * 純攻撃の最短(wave 相当)より高く、長さ比例ダメージ(ADR 0001 の非線形リターン)の例外に置く。
+ * 短い詠唱ゆえ詠唱時間 < クールダウンとなり、クールダウンが律速になる(ADR 0010 #12/#13)。
+ * これによりテンポ軸(haste/slow による CD 伸縮)が初めて効く局面を作ること自体が価値で、
+ * 絶対ダメージではない。実効DPSが暴れないよう CD は他カードと同じ 1500ms に揃え、damage を
+ * 純攻撃の最小(wave=3)以下に切り詰めて抑える。CARDS / STARTER_DECK には混ぜない(非破壊)。
+ */
+export const QUICK_CARDS: readonly Card[] = [
+  {
+    id: 'flash',
+    name: '閃光',
+    displayText: '閃け',
+    reading: 'ひらめけ',
+    damage: 2,
+    cooldownMs: 1500,
+    effects: [],
+  },
+  {
+    id: 'glint',
+    name: '煌めき',
+    displayText: '煌めけ',
+    reading: 'きらめけ',
+    damage: 2,
+    cooldownMs: 1500,
+    effects: [],
+  },
+  {
+    id: 'rend',
+    name: '斬撃',
+    displayText: '斬り裂け',
+    reading: 'きりさけ',
+    damage: 2,
+    cooldownMs: 1500,
+    effects: [],
+  },
+  {
+    id: 'pyre',
+    name: '焔',
+    displayText: '燃え上がれ',
+    reading: 'もえあがれ',
+    damage: 2,
+    cooldownMs: 1500,
+    effects: [],
+  },
+  {
+    id: 'dash',
+    name: '疾風',
+    displayText: '駆け抜けろ',
+    reading: 'かけぬけろ',
+    damage: 3,
+    cooldownMs: 1500,
+    effects: [],
+  },
+];

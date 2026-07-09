@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { validateDeck, DECK_SIZE, MAX_PER_CARD, CARD_POOL } from './deck.ts';
-import { CARDS, EFFECT_CARDS } from '../engine/index.ts';
+import { CARDS, EFFECT_CARDS, QUICK_CARDS } from '../engine/index.ts';
 
 /** ちょうど 15 枚・同種最大 2 の合法デッキ(純攻撃 10 種 + 軽い 5 種をもう 1 枚)。 */
 function legalDeckIds(): string[] {
@@ -8,9 +8,9 @@ function legalDeckIds(): string[] {
 }
 
 describe('サーバー側デッキ検証(validateDeck)', () => {
-  it('カードプールは純攻撃 10 + 効果 6 = 16 種', () => {
-    expect(CARD_POOL.length).toBe(CARDS.length + EFFECT_CARDS.length);
-    expect(CARD_POOL.length).toBe(16);
+  it('カードプールは純攻撃 10 + 効果 6 + クイック 5 = 21 種', () => {
+    expect(CARD_POOL.length).toBe(CARDS.length + EFFECT_CARDS.length + QUICK_CARDS.length);
+    expect(CARD_POOL.length).toBe(21);
   });
 
   it('15 枚・同種最大 2・実在カードなら valid で Card 配列に解決される', () => {
@@ -29,6 +29,17 @@ describe('サーバー側デッキ検証(validateDeck)', () => {
       ...CARDS.slice(0, 4).flatMap((c) => [c.id, c.id]),
       ...EFFECT_CARDS.map((c) => c.id),
       CARDS[4].id,
+    ];
+    expect(ids.length).toBe(DECK_SIZE);
+    expect(validateDeck(ids).valid).toBe(true);
+  });
+
+  it('クイックカードを混ぜても 15 枚・同種最大 2 なら valid(client/server プール整合)', () => {
+    // 純攻撃 5 種 × 2 + クイック 5 種 × 1 = 15 枚。web の deck-storage が受理したデッキを
+    // サーバーも受理する(QUICK_CARDS をプールに含めたことの回帰)。
+    const ids = [
+      ...CARDS.slice(0, 5).flatMap((c) => [c.id, c.id]),
+      ...QUICK_CARDS.map((c) => c.id),
     ];
     expect(ids.length).toBe(DECK_SIZE);
     expect(validateDeck(ids).valid).toBe(true);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CARDS, STARTER_DECK, EFFECT_CARDS } from './cards';
+import { CARDS, STARTER_DECK, EFFECT_CARDS, QUICK_CARDS } from './cards';
 import { TypingSession } from './romaji/session';
 
 /** 最短ローマ字路の打鍵数(詠唱時間の代理, ADR 0010 #12)。 */
@@ -88,6 +88,60 @@ describe('効果カードの機械検証(ADR 0010)', () => {
     const attackIds = new Set(CARDS.map((c) => c.id));
     for (const id of effectIds) {
       expect(attackIds.has(id), id).toBe(false);
+    }
+  });
+});
+
+describe('クイックカードの機械検証(CONTEXT.md「クイックカード」)', () => {
+  it('クイックカードは5種', () => {
+    expect(QUICK_CARDS.length).toBe(5);
+  });
+
+  it('読みが判定エンジンで変換可能(かな純度)', () => {
+    for (const card of QUICK_CARDS) {
+      expect(() => new TypingSession(card.reading), card.name).not.toThrow();
+    }
+  });
+
+  it('詠唱が非常に短い(純攻撃の最短読みより短い)', () => {
+    // 純攻撃カードの最短読み(=wave=10 かな)未満。CONTEXT.md「詠唱が非常に短い」。
+    const minAttackReading = Math.min(...CARDS.map((c) => c.reading.length));
+    for (const card of QUICK_CARDS) {
+      expect(card.reading.length, card.name).toBeLessThan(minAttackReading);
+    }
+  });
+
+  it('絶対ダメージは小さい(純攻撃の最小ダメージ以下)', () => {
+    // CONTEXT.md「絶対ダメージ(カードダメージ)は小さい」。wave=3 を上限とする。
+    const minAttackDamage = Math.min(...CARDS.map((c) => c.damage));
+    for (const card of QUICK_CARDS) {
+      expect(card.damage, card.name).toBeLessThanOrEqual(minAttackDamage);
+    }
+  });
+
+  it('打鍵効率は純攻撃の最小効率より高い(長さ比例の例外, CONTEXT.md)', () => {
+    // CONTEXT.md「打鍵効率は高い」。短いのに damage/打鍵 が wave 相当を上回る。
+    const minAttackEfficiency = Math.min(...CARDS.map((c) => c.damage / keystrokes(c.reading)));
+    for (const card of QUICK_CARDS) {
+      const efficiency = card.damage / keystrokes(card.reading);
+      expect(efficiency, `${card.name} は最小効率より高いこと`).toBeGreaterThan(
+        minAttackEfficiency
+      );
+    }
+  });
+
+  it('クイックは純攻撃(テンポ価値が本体, 効果は持たない)', () => {
+    for (const card of QUICK_CARDS) {
+      expect(card.effects, card.name).toHaveLength(0);
+    }
+  });
+
+  it('カードIDは一意で、純攻撃カード・効果カードと衝突しない', () => {
+    const quickIds = QUICK_CARDS.map((c) => c.id);
+    expect(new Set(quickIds).size).toBe(QUICK_CARDS.length);
+    const existing = new Set([...CARDS, ...EFFECT_CARDS].map((c) => c.id));
+    for (const id of quickIds) {
+      expect(existing.has(id), id).toBe(false);
     }
   });
 });
