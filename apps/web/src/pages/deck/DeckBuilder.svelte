@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CARDS, EFFECT_CARDS, QUICK_CARDS, type Card } from '@magic/server/engine';
+  import { CARDS, EFFECT_CARDS, QUICK_CARDS, type Card as CardModel } from '@magic/server/engine';
   import {
     DECK_SIZE,
     MAX_PER_CARD,
@@ -7,8 +7,12 @@
     loadDeckIds,
     saveDeckIds,
     defaultDeckIds,
+    cardById,
   } from '../../lib/deck-storage';
   import { handleNavClick } from '../../lib/router.svelte';
+  import Card from '../../ui/Card.svelte';
+  import Panel from '../../ui/Panel.svelte';
+  import Button from '../../ui/Button.svelte';
 
   // デッキビルダー(ADR 0011 #7)。プール(純攻撃10 + 効果6 + クイック5)から 15枚・同種最大2枚 の
   // デッキを構築し localStorage に保存/読込する。判定・永続化のロジックは lib/deck-storage に
@@ -37,7 +41,7 @@
   }
 
   // カードを1枚追加する。同種上限・総数上限に達していたら何もしない(ボタンも無効化する)。
-  function addCard(card: Card): void {
+  function addCard(card: CardModel): void {
     if (deck.length >= DECK_SIZE || countOf(card.id) >= MAX_PER_CARD) {
       return;
     }
@@ -46,7 +50,7 @@
   }
 
   // カードを1枚減らす(末尾の同種を1枚除く)。
-  function removeCard(card: Card): void {
+  function removeCard(card: CardModel): void {
     const idx = deck.lastIndexOf(card.id);
     if (idx === -1) {
       return;
@@ -69,299 +73,352 @@
     deck = defaultDeckIds();
     savedMessage = null;
   }
+
+  // --- 表示専用: フィルタピル(pages 層の UI 状態。検証・永続化ロジックには一切関与しない) ---
+
+  type Category = 'attack' | 'effect' | 'quick';
+  type FilterValue = 'all' | Category;
+
+  // 3プールを結合した表示用配列。各カードにカテゴリタグを付与してフィルタ対象にする。
+  const POOL: readonly { card: CardModel; category: Category }[] = [
+    ...CARDS.map((card) => ({ card, category: 'attack' as const })),
+    ...EFFECT_CARDS.map((card) => ({ card, category: 'effect' as const })),
+    ...QUICK_CARDS.map((card) => ({ card, category: 'quick' as const })),
+  ];
+
+  const FILTERS: readonly { value: FilterValue; label: string }[] = [
+    { value: 'all', label: 'すべて' },
+    { value: 'attack', label: '攻撃' },
+    { value: 'effect', label: '効果' },
+    { value: 'quick', label: 'クイック' },
+  ];
+
+  let filter = $state<FilterValue>('all');
+
+  const filteredPool = $derived(
+    filter === 'all' ? POOL : POOL.filter((p) => p.category === filter)
+  );
+
+  // デッキ内容の頭文字チップ(表示専用)。プールに実在しない ID は '?' にフォールバックする。
+  function chipLabel(id: string): string {
+    return cardById(id)?.name.charAt(0) ?? '?';
+  }
+
+  function chipIsEffect(id: string): boolean {
+    return (cardById(id)?.effects.length ?? 0) > 0;
+  }
 </script>
 
-<section class="builder">
-  <header>
-    <h1>デッキ編集</h1>
-    <p class="rule">
-      {DECK_SIZE}枚ちょうど・同じカードは最大{MAX_PER_CARD}枚まで。純攻撃カードに加え、効果カード・クイックカードを混ぜられます。
-    </p>
-  </header>
+<div class="stage-viewport">
+  <div class="stage">
+    <section class="builder">
+      <div class="top">
+        <h1>デッキ編集</h1>
+        <div class="pills" role="group" aria-label="カードの絞り込み">
+          {#each FILTERS as f (f.value)}
+            <button
+              type="button"
+              class="pill {f.value}"
+              class:active={filter === f.value}
+              onclick={() => (filter = f.value)}
+            >
+              {f.label}
+            </button>
+          {/each}
+        </div>
+        <p class="rule">
+          {DECK_SIZE}枚・同種{MAX_PER_CARD}枚まで
+        </p>
+      </div>
 
-  <!-- 現在の枚数と検証状況 -->
-  <div class="summary" class:ok={validation.valid} class:ng={!validation.valid}>
-    <span class="count">{deck.length} / {DECK_SIZE} 枚</span>
-    {#if validation.valid}
-      <span class="status">構築 OK</span>
-    {:else}
-      <ul class="errors">
-        {#each validation.errors as err (err)}
-          <li>{err}</li>
+      <div class="grid">
+        {#each filteredPool as { card } (card.id)}
+          {@const n = countOf(card.id)}
+          <div class="pool-item" class:full={n >= MAX_PER_CARD}>
+            <Card
+              {card}
+              face="front"
+              interactive={false}
+              width={172}
+              deckCount={n}
+              maxPerCard={MAX_PER_CARD}
+            />
+            <div class="pc-buttons">
+              <button
+                type="button"
+                class="pc-btn"
+                onclick={() => removeCard(card)}
+                disabled={n === 0}
+                aria-label="{card.name}を1枚減らす">−</button
+              >
+              <button
+                type="button"
+                class="pc-btn"
+                onclick={() => addCard(card)}
+                disabled={n >= MAX_PER_CARD || deck.length >= DECK_SIZE}
+                aria-label="{card.name}を1枚増やす">＋</button
+              >
+            </div>
+          </div>
         {/each}
-      </ul>
-    {/if}
-  </div>
-
-  <div class="actions">
-    <button type="button" class="primary" onclick={save} disabled={!validation.valid}>
-      保存
-    </button>
-    <button type="button" onclick={reset}>既定デッキに戻す</button>
-    <a class="link" href="/match" onclick={(e) => handleNavClick(e, 'match')}>対戦へ</a>
-    <a class="link" href="/" onclick={(e) => handleNavClick(e, 'home')}>ホームへ</a>
-  </div>
-
-  {#if savedMessage}
-    <div class="saved" role="status">{savedMessage}</div>
-  {/if}
-
-  <!-- 純攻撃カード -->
-  <h2>純攻撃カード</h2>
-  <div class="pool">
-    {#each CARDS as card (card.id)}
-      {@const n = countOf(card.id)}
-      <div class="pool-card" class:in-deck={n > 0}>
-        <div class="pc-head">
-          <span class="pc-name">{card.name}</span>
-          <span class="pc-count">{n}/{MAX_PER_CARD}</span>
-        </div>
-        <div class="pc-text">{card.displayText}</div>
-        <div class="pc-meta">ダメージ {card.damage}</div>
-        <div class="pc-buttons">
-          <button type="button" onclick={() => removeCard(card)} disabled={n === 0}>−</button>
-          <button
-            type="button"
-            onclick={() => addCard(card)}
-            disabled={n >= MAX_PER_CARD || deck.length >= DECK_SIZE}>＋</button
-          >
-        </div>
       </div>
-    {/each}
-  </div>
 
-  <!-- 効果カード -->
-  <h2>効果カード</h2>
-  <div class="pool">
-    {#each EFFECT_CARDS as card (card.id)}
-      {@const n = countOf(card.id)}
-      <div class="pool-card effect" class:in-deck={n > 0}>
-        <div class="pc-head">
-          <span class="pc-name">{card.name}</span>
-          <span class="pc-count">{n}/{MAX_PER_CARD}</span>
+      <Panel variant="purple">
+        <div class="tray">
+          <div class="tray-status">
+            <span class="tray-count">{deck.length}/{DECK_SIZE}</span>
+            {#if validation.valid}
+              <span class="tray-ok">構築OK</span>
+            {:else}
+              <span class="tray-ng">{validation.errors.join('・')}</span>
+            {/if}
+          </div>
+          <div class="tray-chips">
+            {#each deck as id, i (i + ':' + id)}
+              <span class="chip" class:gold={chipIsEffect(id)}>{chipLabel(id)}</span>
+            {/each}
+          </div>
+          <div class="tray-actions">
+            <Button variant="primary" onclick={save} disabled={!validation.valid}>保存</Button>
+            <Button variant="secondary" onclick={reset}>既定に戻す</Button>
+          </div>
         </div>
-        <div class="pc-text">{card.displayText}</div>
-        <div class="pc-meta">ダメージ {card.damage}・効果あり</div>
-        <div class="pc-buttons">
-          <button type="button" onclick={() => removeCard(card)} disabled={n === 0}>−</button>
-          <button
-            type="button"
-            onclick={() => addCard(card)}
-            disabled={n >= MAX_PER_CARD || deck.length >= DECK_SIZE}>＋</button
-          >
-        </div>
-      </div>
-    {/each}
-  </div>
+      </Panel>
 
-  <!-- クイックカード -->
-  <h2>クイックカード</h2>
-  <div class="pool">
-    {#each QUICK_CARDS as card (card.id)}
-      {@const n = countOf(card.id)}
-      <div class="pool-card quick" class:in-deck={n > 0}>
-        <div class="pc-head">
-          <span class="pc-name">{card.name}</span>
-          <span class="pc-count">{n}/{MAX_PER_CARD}</span>
-        </div>
-        <div class="pc-text">{card.displayText}</div>
-        <div class="pc-meta">ダメージ {card.damage}・短い詠唱</div>
-        <div class="pc-buttons">
-          <button type="button" onclick={() => removeCard(card)} disabled={n === 0}>−</button>
-          <button
-            type="button"
-            onclick={() => addCard(card)}
-            disabled={n >= MAX_PER_CARD || deck.length >= DECK_SIZE}>＋</button
-          >
-        </div>
-      </div>
-    {/each}
+      {#if savedMessage}
+        <p class="saved" role="status">{savedMessage}</p>
+      {/if}
+
+      <nav class="nav">
+        <Button variant="ghost" href="/match" onclick={(e) => handleNavClick(e, 'match')}
+          >対戦へ</Button
+        >
+        <Button variant="ghost" href="/" onclick={(e) => handleNavClick(e, 'home')}>ホームへ</Button
+        >
+      </nav>
+    </section>
   </div>
-</section>
+</div>
 
 <style>
   .builder {
+    box-sizing: border-box;
     width: 100%;
-    max-width: 760px;
-    font-family: sans-serif;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    padding: 48px 70px;
+    background: var(--bg-radial-top);
+    font-family: var(--font-body);
   }
 
-  header {
-    text-align: center;
+  .top {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    flex-wrap: wrap;
   }
 
-  h1 {
-    font-size: 1.8rem;
-    color: #333;
-    margin-bottom: 0.2rem;
+  .top h1 {
+    margin: 0;
+    font-family: var(--font-serif);
+    font-size: 48px;
+    font-weight: 800;
+    color: var(--text-heading);
+  }
+
+  .pills {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+
+  .pill {
+    font-family: var(--font-body);
+    font-size: 24px;
+    padding: 8px 26px;
+    border-radius: var(--radius-pill);
+    border: 1.5px solid var(--border-dim);
+    background: none;
+    color: var(--text-body);
+    cursor: pointer;
+    transition:
+      background 0.12s ease-out,
+      border-color 0.12s ease-out,
+      color 0.12s ease-out,
+      box-shadow 0.12s ease-out;
+  }
+
+  .pill.effect {
+    border-color: var(--gold-glow-50);
+    color: var(--gold-bright);
+  }
+
+  .pill.quick {
+    border-color: var(--status-haste-text);
+    color: var(--status-haste-text);
+  }
+
+  .pill.active {
+    border-color: transparent;
+    background: var(--gold);
+    color: var(--parchment-text);
+    font-weight: 700;
+  }
+
+  .pill:hover:not(.active),
+  .pill:focus-visible:not(.active) {
+    box-shadow: 0 0 14px rgba(122, 111, 196, 0.25);
+    outline: none;
   }
 
   .rule {
-    color: #777;
-    font-size: 0.9rem;
-    margin-top: 0;
+    margin: 0 0 0 auto;
+    font-size: 22px;
+    color: var(--text-faint);
+    white-space: nowrap;
   }
 
-  .summary {
-    border-radius: 8px;
-    padding: 0.6rem 1rem;
-    margin: 1rem 0;
+  .grid {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     display: flex;
-    align-items: center;
-    gap: 1rem;
     flex-wrap: wrap;
+    align-content: flex-start;
+    justify-content: center;
+    gap: 56px 40px;
+    padding: 28px 8px 40px;
   }
 
-  .summary.ok {
-    background: #e8f5e9;
-    border: 1px solid #a5d6a7;
-  }
-
-  .summary.ng {
-    background: #fff8e1;
-    border: 1px solid #f0c36d;
-  }
-
-  .count {
-    font-weight: bold;
-    font-size: 1.1rem;
-  }
-
-  .status {
-    color: #2e7d32;
-    font-weight: bold;
-  }
-
-  .errors {
-    margin: 0;
-    padding-left: 1.2rem;
-    color: #8a6d00;
-    font-size: 0.9rem;
-  }
-
-  .actions {
+  .pool-item {
+    flex: none;
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 0.8rem;
-    flex-wrap: wrap;
-    margin-bottom: 0.5rem;
+    gap: 40px;
+    width: 172px;
   }
 
-  .actions button {
-    padding: 0.5rem 1.2rem;
-    border-radius: 6px;
-    border: 1px solid #bbb;
-    background: #fff;
-    cursor: pointer;
-    font-size: 0.95rem;
-  }
-
-  .actions button.primary {
-    border-color: #1565c0;
-    background: #1565c0;
-    color: #fff;
-    font-weight: bold;
-  }
-
-  .actions button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .link {
-    color: #1565c0;
-    text-decoration: underline;
-  }
-
-  .saved {
-    background: #e3f2fd;
-    border: 1px solid #90caf9;
-    border-radius: 6px;
-    padding: 0.4rem 0.8rem;
-    color: #1565c0;
-    font-size: 0.9rem;
-    margin-bottom: 0.5rem;
-  }
-
-  h2 {
-    font-size: 1.1rem;
-    color: #444;
-    margin: 1.2rem 0 0.5rem;
-    border-bottom: 1px solid #eee;
-    padding-bottom: 0.2rem;
-  }
-
-  .pool {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 0.6rem;
-  }
-
-  .pool-card {
-    border: 2px solid #ddd;
-    border-radius: 6px;
-    padding: 0.6rem;
-    background: #fafafa;
-  }
-
-  .pool-card.effect {
-    background: #faf5ff;
-  }
-
-  .pool-card.quick {
-    background: #fffaf0;
-  }
-
-  .pool-card.in-deck {
-    border-color: #1565c0;
-  }
-
-  .pc-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-  }
-
-  .pc-name {
-    font-weight: bold;
-  }
-
-  .pc-count {
-    font-size: 0.8rem;
-    color: #777;
-  }
-
-  .pc-text {
-    font-size: 0.8rem;
-    color: #555;
-    margin: 0.3rem 0;
-    min-height: 2.2em;
-  }
-
-  .pc-meta {
-    font-size: 0.8rem;
-    color: #777;
-    margin-bottom: 0.4rem;
+  /* Card.svelte 自体は変更せず、ラッパーから内部の .card 要素を上書きして
+     2/2 到達時の紫枠+発光を表現する(README「デッキ編集」仕様)。 */
+  .pool-item.full :global(.card.front) {
+    border: var(--card-border-w-selected) solid var(--purple-border);
+    box-shadow: 0 0 22px rgba(122, 111, 196, 0.4);
   }
 
   .pc-buttons {
     display: flex;
-    gap: 0.4rem;
+    gap: 10px;
+    width: 100%;
   }
 
-  .pc-buttons button {
+  .pc-btn {
     flex: 1;
-    padding: 0.3rem 0;
-    border-radius: 4px;
-    border: 1px solid #bbb;
-    background: #fff;
-    cursor: pointer;
-    font-size: 1.1rem;
+    height: 40px;
+    border-radius: 8px;
+    border: 1.5px solid var(--border-dim);
+    background: none;
+    color: var(--text-body);
+    font-family: var(--font-mono);
+    font-size: 22px;
     line-height: 1;
+    cursor: pointer;
+    transition:
+      border-color 0.12s ease-out,
+      color 0.12s ease-out;
   }
 
-  .pc-buttons button:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
+  .pc-btn:hover:not(:disabled),
+  .pc-btn:focus-visible:not(:disabled) {
+    border-color: var(--purple-border);
+    color: var(--text-heading);
+    outline: none;
+  }
+
+  .pc-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  .tray {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: 26px;
+    padding: 24px 32px;
+  }
+
+  .tray-status {
+    flex: none;
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+  }
+
+  .tray-count {
+    font-family: var(--font-mono);
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text-heading);
+  }
+
+  .tray-ok {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--status-ok);
+  }
+
+  .tray-ng {
+    font-size: 20px;
+    color: var(--status-warning-text);
+  }
+
+  .tray-chips {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .chip {
+    font-family: var(--font-serif);
+    font-size: 22px;
+    line-height: 1;
+    border: 1.5px solid var(--border-card);
+    border-radius: 6px;
+    padding: 6px 12px;
+    background: var(--parchment-start);
+    color: var(--parchment-text);
+  }
+
+  .chip.gold {
+    border-color: var(--gold);
+    background: var(--parchment-gold-start);
+    color: var(--parchment-effect-text);
+  }
+
+  .tray-actions {
+    flex: none;
+    display: flex;
+    gap: 16px;
+  }
+
+  .saved {
+    flex: none;
+    margin: 0;
+    text-align: center;
+    font-size: 22px;
+    color: var(--status-ok);
+  }
+
+  .nav {
+    flex: none;
+    display: flex;
+    justify-content: center;
+    gap: 16px;
   }
 </style>
