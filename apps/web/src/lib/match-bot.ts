@@ -6,7 +6,7 @@
  * 配線するため、これはあくまで UI とローカルエンジン挙動の確認用スタブである。
  *
  * 設計上の要点:
- * - ボットも自陣と同じ MatchEngine の API(selectCard / pressKey / drainTypeahead)だけを
+ * - ボットも自陣と同じ MatchEngine の API(selectCard / pressKey)だけを
  *   通して操作する。エンジンの内部には触れない(自陣プレイヤーと完全に対称)。
  * - 打鍵は romaji を再実装せず、エンジンが返す `remainingGuide` の先頭 1 文字を打つ。
  *   これでどんな読みでも常に「正しい次のキー」を打てる(誤入力 0 のボット)。
@@ -31,7 +31,7 @@ export const DEFAULT_BOT: BotConfig = {
 
 /**
  * 1 体のボットを駆動する。指定 playerId 視点で MatchEngine を読み、自分の手を進める。
- * 状態(次に打てる時刻・構え済みか)を内部に持ち、step(now) が呼ばれるたびに高々 1 手進める。
+ * 状態(次に打てる時刻)を内部に持ち、step(now) が呼ばれるたびに高々 1 手進める。
  */
 export class MatchBot {
   private readonly engine: MatchEngine;
@@ -53,10 +53,9 @@ export class MatchBot {
    *
    * 手順:
    * 1. 決着済みなら何もしない。
-   * 2. クールダウン明けの先行入力をドレインする(ADR 0007、自陣と同じ契機)。
-   * 3. まだ間隔が空いていなければ何もしない。
-   * 4. カード未選択なら適当な 1 枚を構える。
-   * 5. 選択中なら remainingGuide の先頭 1 文字を打つ。
+   * 2. まだ間隔が空いていなければ何もしない。
+   * 3. カード未選択なら適当な 1 枚を構える。
+   * 4. 選択中なら remainingGuide の先頭 1 文字を打つ。
    */
   step(now: number): boolean {
     const snap = this.engine.snapshot(this.playerId);
@@ -64,13 +63,8 @@ export class MatchBot {
       return false;
     }
 
-    // クールダウン明けの先行入力を流す(自陣の時間 tick と同じ契機, ADR 0007/0008)。
-    // drainTypeahead は受理した打鍵の結果列を返す(ADR 0012)。ボットは相手陣なので音は
-    // 鳴らさない。状態が変わったかは .length で見る(空配列は truthy なので真偽では見ない)。
-    let changed = this.engine.drainTypeahead(this.playerId, now).length > 0;
-
     if (now < this.nextActionAtMs) {
-      return changed;
+      return false;
     }
 
     const self = snap.self;
@@ -87,7 +81,7 @@ export class MatchBot {
     const next = self.remainingGuide[0];
     if (next === undefined) {
       this.nextActionAtMs = now + this.config.keyIntervalMs;
-      return changed;
+      return false;
     }
     this.engine.pressKey(this.playerId, next, now);
     // 発動して手札が空いた直後は、次の構えまで少し間を置く(クールダウン中の空打ち回避)。
@@ -95,8 +89,7 @@ export class MatchBot {
     const justActivated = after.self.selectedIndex === null;
     this.nextActionAtMs =
       now + (justActivated ? this.config.selectDelayMs : this.config.keyIntervalMs);
-    changed = true;
-    return changed;
+    return true;
   }
 
   /**

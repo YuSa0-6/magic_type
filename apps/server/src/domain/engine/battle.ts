@@ -12,11 +12,8 @@
 import type { Card } from './cards';
 import { TypingSession } from './romaji/session';
 
-/**
- * 1打鍵の結果。
- * - 'buffered' はクールダウン中の構え済み打鍵を先行入力バッファに積んだ状態(ADR 0007)。
- */
-export type PressResult = 'accepted' | 'mistyped' | 'activated' | 'blocked' | 'buffered';
+/** 1打鍵の結果。 */
+export type PressResult = 'accepted' | 'mistyped' | 'activated' | 'blocked';
 
 /**
  * UI用の時間軸スナップショット(ADR 0008)。
@@ -128,13 +125,6 @@ function shuffle<T>(items: readonly T[], rng: () => number): T[] {
 
 const HAND_SIZE = 4;
 
-/**
- * 先行入力バッファの上限(ADR 0007)。
- * 暴走防止の上限。現実の先行入力長(どの読みの最大ローマ字長)を十分に上回る値にして、
- * 正当な入力を無音破棄しないようにする(クールダウン1500ms中の高速タイパーの打鍵数も賄える)。
- */
-const TYPEAHEAD_LIMIT = 64;
-
 export class BattleEngine {
   private readonly maxHp: number;
   private readonly rng: () => number;
@@ -148,9 +138,6 @@ export class BattleEngine {
   private session: TypingSession | null = null;
   /** 現詠唱で最初の受理打鍵が起きた時刻(まだなら null) */
   private castStartedAtMs: number | null = null;
-
-  /** クールダウン中に構え済みカードへ打った打鍵の先行入力バッファ(ADR 0007) */
-  private typeahead: string[] = [];
 
   private startedAtMs: number | null = null;
   private cooldownUntilMs = 0;
@@ -200,76 +187,25 @@ export class BattleEngine {
     // 選択し直すたびに新しい詠唱セッションを作る(切り替え=進捗リセット)
     this.session = new TypingSession(card.reading);
     this.castStartedAtMs = null;
-    // 別カードへ構え直すと先行入力バッファも進捗ごとリセットする(ADR 0007)
-    this.typeahead = [];
     this.eventLog.push({ type: 'selected', handIndex, cardId: card.id, atMs });
   }
 
   /**
    * 1打鍵を処理する。
    * - カード未選択・終了後は 'blocked'(誤入力に数えない)
-   * - クールダウン中は構え済み打鍵を先行入力バッファに積み 'buffered'(ADR 0007)
+   * - クールダウン中は打鍵を受理せず 'blocked' を返す(破棄。先行入力は無い)
    * - それ以外は選択中カードの TypingSession に委譲し、打ち切ったら発動して 'activated'
-   *
-   * 先頭で drainTypeahead を呼び、保留中の先行入力を順序通りに先へ流してから
-   * 生打鍵を扱う。これをしないと、クールダウン明け直後〜次の tick(最大~100ms)の窓で、
-   * バッファ済み打鍵より後から来た生打鍵が先に適用され、打鍵順が逆転して
-   * 偽の mistyped(ひいてはダメージ減衰)が起きる。
-   * drainTypeahead はクールダウン中/バッファ空/セッション無しでは何もしない(no-op)。
-   * ドレインで発動が起きてセッションが消える/新クールダウンが始まる場合に備え、
-   * ドレイン後に finished/セッション/クールダウンのガードを評価し直す。
    */
   pressKey(key: string, atMs: number): PressResult {
-    // 保留中の先行入力を順序通りに先へ流す(クールダウン中・空・セッション無しなら no-op)
-    this.drainTypeahead(atMs);
-
     if (this.finished || this.selectedIndex === null || this.session === null) {
       return 'blocked';
     }
-    // クールダウン中は捨てずに先行入力バッファへ積む(明けに drainTypeahead で受理)
+    // クールダウン中の打鍵は受理せず破棄する
     if (this.isOnCooldown(atMs)) {
-      if (this.typeahead.length < TYPEAHEAD_LIMIT) {
-        this.typeahead.push(key);
-      }
-      // 上限超過分は捨てるが、構え済みの打鍵という意味では受け付けたので 'buffered'
-      return 'buffered';
+      return 'blocked';
     }
 
     return this.applyKey(key, atMs);
-  }
-
-  /**
-   * クールダウン明けに先行入力バッファをまとめて受理する(ADR 0007)。
-   * 受理時刻はクールダウン明けの時刻(cooldownUntilMs)で統一するため、
-   * castStartedAtMs がクールダウン中まで遡らず、詠唱時間(ADR 0001)が壊れない。
-   * 発動でセッションが消えたら以降のバッファは破棄する。
-   * 受理した各打鍵の結果を順序通りに返す(何もドレインしなければ空配列)。
-   * UI 側はこの結果列で「クールダウン明けに実際に受理された打鍵」にのみ音を付けられる
-   * (ADR 0012)。入力軸スナップショットを取り直すかは戻り値の長さで判断する。
-   */
-  drainTypeahead(atMs: number): PressResult[] {
-    if (this.isOnCooldown(atMs) || this.typeahead.length === 0 || this.session === null) {
-      // ドレインできないときはバッファをそのまま保持する(まだクールダウン中など)
-      if (this.session === null) {
-        this.typeahead = [];
-      }
-      return [];
-    }
-
-    // 受理時刻はクールダウン明けの時刻に統一する(元の打鍵時刻は使わない)
-    const acceptAtMs = this.cooldownUntilMs;
-    const buffered = this.typeahead;
-    this.typeahead = [];
-
-    const results: PressResult[] = [];
-    for (const key of buffered) {
-      // 発動などでセッションが消えたら以降のバッファは破棄
-      if (this.session === null) {
-        break;
-      }
-      results.push(this.applyKey(key, acceptAtMs));
-    }
-    return results;
   }
 
   /**

@@ -242,13 +242,9 @@ export function resume(): void {
  * - 'accepted' → 打鍵音
  * - 'mistyped' → エラー音
  * - 'activated' → 発動音
- * - 'buffered' / 'blocked' → 無音
- *   'buffered' はクールダウン中に構え済みカードへ打鍵し先行入力バッファへ積んだ瞬間で、
- *   仕様上「打った瞬間は無音」(ADR 0012)。配線側が press 前に明示ドレインしてもクールダウン
- *   状態は解除されないため、press 経路の pressKey は 'buffered' を返しうる(battle.ts /
- *   player-side.ts)。ここで無音にすることで「打った瞬間に鳴る/二重音/正誤確定前の嘘音」を
- *   防ぐ。受理ぶんはクールダウン明けの drainTypeahead が 'accepted'/'mistyped'/'activated'
- *   として返すので、正しいタイミングで漏れなく鳴る。
+ * - 'blocked' → 無音
+ *   'blocked' はカード未選択・終了後・クールダウン中の打鍵(いずれも受理されない)。
+ *   これらは無音にして「打った瞬間に鳴る/正誤確定前の嘘音」を防ぐ。
  * ミュート時・非対応環境では何もしない。
  */
 export function playForResult(result: PressResult): void {
@@ -270,7 +266,7 @@ export function playForResult(result: PressResult): void {
     case 'activated':
       playActivation(ctx);
       break;
-    // 'buffered'(打った瞬間は無音)・'blocked'・その他は無音。
+    // 'blocked'(未選択・終了後・クールダウン中の打鍵)・その他は無音。
   }
 }
 
