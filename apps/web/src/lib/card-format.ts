@@ -1,5 +1,8 @@
 import type { Effect } from '@magic/server/engine';
 
+/** 手札4枚の扇配置の回転角(deg)。バトル画面間で共通(BattleScreen/MatchBattleScreen)。 */
+export const HAND_ROTATIONS = [-6, -2, 2, 6];
+
 /**
  * カード面に載せる効果テキスト(例「盾+8」「HP+6」「加速」)を組み立てる。
  * 表示専用の整形であり判定ではない(engine の Effect 型を import type で借りるのみ)。

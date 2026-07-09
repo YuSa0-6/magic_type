@@ -5,6 +5,7 @@
   import Panel from '../../ui/Panel.svelte';
   import StatusBadge from '../../ui/StatusBadge.svelte';
   import { formatSeconds } from '../../lib/format';
+  import { HAND_ROTATIONS } from '../../lib/card-format';
 
   // バトル画面: スナップショットを表示するだけの薄い皮(ADR 0002)。
   // 業務ロジックは持たず、カードクリックは親へ通知するのみ。
@@ -31,9 +32,6 @@
   const selectedCard = $derived(
     state.selectedIndex === null ? null : state.hand[state.selectedIndex]
   );
-
-  // 手札の扇配置(呼び出し側=pages で角度を決めて Card に渡す)。
-  const HAND_ROTATIONS = [-6, -2, 2, 6];
 
   // CD ゲージは「回復の進捗」を 0→1 で表す。timers は残り時間なので 1 から引いて反転する。
   // 進捗率の割り算は pages 側で行い、Card には算出済みの値だけ渡す(ADR 0006)。
