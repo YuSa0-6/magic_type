@@ -206,6 +206,22 @@ export function tryStart(state: RoomState, options: StartOptions): Result<StartR
 }
 
 /**
+ * 決着後、同じ相手・同じルームで再戦するためにルームを巻き戻す(ADR 0011 #17)。
+ * 両席のデッキ(直前のマッチで検証済み)はそのまま引き継ぎ、ready を立てて phase を 'full' へ
+ * 戻す。呼び出し側(DO)は両者の再戦合意が揃った時点でのみこれを呼び、直後に必ず tryStart する
+ * 契約(合意が揃った時点で canStart は真になる)。
+ */
+export function resetForRematch(state: RoomState): RoomState {
+  const readySlot = (slot: Slot | null): Slot | null =>
+    slot === null ? null : { ...slot, ready: true };
+  const slots: readonly [Slot | null, Slot | null] = [
+    readySlot(state.slots[0]),
+    readySlot(state.slots[1]),
+  ];
+  return { ...state, slots, phase: 'full' };
+}
+
+/**
  * 両プレイヤー(id + deck)と options(masterSeed/maxHp/timeLimitMs)から MatchConfig を
  * 組み立てる純関数(ADR 0011 #7)。masterSeed の生成自体はここではしない。
  * 省略可能な maxHp/timeLimitMs は engine 既定へ倒す。

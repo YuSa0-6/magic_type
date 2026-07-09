@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { CARDS, EFFECT_CARDS, type Card } from '@magic/server/engine';
+  import { CARDS, EFFECT_CARDS, QUICK_CARDS, type Card } from '@magic/server/engine';
   import {
     DECK_SIZE,
     MAX_PER_CARD,
@@ -10,7 +10,7 @@
   } from '../../lib/deck-storage';
   import { handleNavClick } from '../../lib/router.svelte';
 
-  // デッキビルダー(ADR 0011 #7)。プール(純攻撃10 + 効果6)から 15枚・同種最大2枚 の
+  // デッキビルダー(ADR 0011 #7)。プール(純攻撃10 + 効果6 + クイック5)から 15枚・同種最大2枚 の
   // デッキを構築し localStorage に保存/読込する。判定・永続化のロジックは lib/deck-storage に
   // 集約し、ここは UI と $state の橋渡しだけを持つ(ADR 0002/0006)。
 
@@ -75,7 +75,7 @@
   <header>
     <h1>デッキ編集</h1>
     <p class="rule">
-      {DECK_SIZE}枚ちょうど・同じカードは最大{MAX_PER_CARD}枚まで。純攻撃カードに加え、効果カードを混ぜられます。
+      {DECK_SIZE}枚ちょうど・同じカードは最大{MAX_PER_CARD}枚まで。純攻撃カードに加え、効果カード・クイックカードを混ぜられます。
     </p>
   </header>
 
@@ -142,6 +142,30 @@
         </div>
         <div class="pc-text">{card.displayText}</div>
         <div class="pc-meta">ダメージ {card.damage}・効果あり</div>
+        <div class="pc-buttons">
+          <button type="button" onclick={() => removeCard(card)} disabled={n === 0}>−</button>
+          <button
+            type="button"
+            onclick={() => addCard(card)}
+            disabled={n >= MAX_PER_CARD || deck.length >= DECK_SIZE}>＋</button
+          >
+        </div>
+      </div>
+    {/each}
+  </div>
+
+  <!-- クイックカード -->
+  <h2>クイックカード</h2>
+  <div class="pool">
+    {#each QUICK_CARDS as card (card.id)}
+      {@const n = countOf(card.id)}
+      <div class="pool-card quick" class:in-deck={n > 0}>
+        <div class="pc-head">
+          <span class="pc-name">{card.name}</span>
+          <span class="pc-count">{n}/{MAX_PER_CARD}</span>
+        </div>
+        <div class="pc-text">{card.displayText}</div>
+        <div class="pc-meta">ダメージ {card.damage}・短い詠唱</div>
         <div class="pc-buttons">
           <button type="button" onclick={() => removeCard(card)} disabled={n === 0}>−</button>
           <button
@@ -282,6 +306,10 @@
 
   .pool-card.effect {
     background: #faf5ff;
+  }
+
+  .pool-card.quick {
+    background: #fffaf0;
   }
 
   .pool-card.in-deck {

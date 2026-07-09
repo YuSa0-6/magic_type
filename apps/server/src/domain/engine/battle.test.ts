@@ -230,22 +230,21 @@ describe('カード切り替えで進捗リセット', () => {
 });
 
 describe('クールダウン', () => {
-  it('クールダウン中の打鍵は先行入力としてバッファされ即時には進まない(ADR 0007)', () => {
+  it('クールダウン中の打鍵は受理されず blocked(先行入力は無い)', () => {
     const engine = makeEngine();
     engine.start(0);
     engine.selectCard(1, 0);
     castFull(engine, 'gale', 1000); // 発動 → 1000+1500=2500 までクールダウン
 
-    // クールダウン中に別カードを構えて打鍵すると 'buffered'(捨てられない)
+    // クールダウン中に別カードを構えて打鍵しても受理されない(破棄される)
     engine.selectCard(0, 1200); // abyss を構える(選択は可能)
-    expect(engine.pressKey('n', 1200)).toBe('buffered');
-    expect(engine.snapshotState().typedRomaji).toBe(''); // この時点では進まない
+    expect(engine.pressKey('n', 1200)).toBe('blocked');
+    expect(engine.snapshotState().typedRomaji).toBe(''); // 進まない
 
-    // クールダウン明け(2500以降)の生打鍵は、まず保留中の先行入力('n')を
-    // 順序通り流してから扱われる(pressKey 先頭の drainTypeahead)。
-    // よって buffered の 'n' で 'n' まで進み、続く正しい打鍵 'a' が受理される。
-    expect(engine.pressKey('a', 2500)).toBe('accepted');
-    expect(engine.snapshotState().typedRomaji).toBe('na'); // abyss = narakuno...
+    // クールダウン明け(2500以降)の打鍵は先頭から通常通り受理される。
+    // クールダウン中の 'n' は繰り越されないので、ここで打つ 'n' が先頭になる。
+    expect(engine.pressKey('n', 2500)).toBe('accepted');
+    expect(engine.snapshotState().typedRomaji).toBe('n'); // abyss = narakuno...
   });
 
   it('クールダウン中でも selectCard は可能', () => {
@@ -266,7 +265,7 @@ describe('クールダウン', () => {
   });
 });
 
-describe('先行入力(type-ahead, ADR 0007)', () => {
+describe('クールダウン中は打鍵を受理しない(先行入力は廃止)', () => {
   /** 発動してクールダウンに入った状態を作り、index0(abyss)を構える */
   function setupCooldownWithReady(): BattleEngine {
     const engine = makeEngine();
@@ -277,111 +276,63 @@ describe('先行入力(type-ahead, ADR 0007)', () => {
     return engine;
   }
 
-  it('クールダウン中の構え済み打鍵は buffered を返し typedRomaji は進まない', () => {
+  it('クールダウン中の打鍵はすべて blocked で typedRomaji は進まない', () => {
     const engine = setupCooldownWithReady();
-    // abyss = narakuno... の先頭 'n','a','r' を先行入力
-    expect(engine.pressKey('n', 1200)).toBe('buffered');
-    expect(engine.pressKey('a', 1250)).toBe('buffered');
-    expect(engine.pressKey('r', 1300)).toBe('buffered');
-    expect(engine.snapshotState().typedRomaji).toBe(''); // まだ進まない
+    // abyss = narakuno... の先頭 'n','a','r' を打っても受理されない
+    expect(engine.pressKey('n', 1200)).toBe('blocked');
+    expect(engine.pressKey('a', 1250)).toBe('blocked');
+    expect(engine.pressKey('r', 1300)).toBe('blocked');
+    expect(engine.snapshotState().typedRomaji).toBe(''); // 進まない
   });
 
-  it('クールダウン明けに drainTypeahead でバッファが受理され typedRomaji が進む', () => {
+  it('クールダウン中の打鍵は破棄され、明けても繰り越されない', () => {
     const engine = setupCooldownWithReady();
+    // クールダウン中(〜2500)に 'na' を打っても破棄される
     engine.pressKey('n', 1200);
-    engine.pressKey('a', 1250);
-    engine.pressKey('r', 1300);
-
-    // クールダウン中のドレインは何もしない(空配列)
-    expect(engine.drainTypeahead(2000)).toEqual([]);
+    engine.pressKey('a', 1300);
     expect(engine.snapshotState().typedRomaji).toBe('');
 
-    // クールダウン明け(2500以降)にドレインすると 'nar' の3打鍵が受理される
-    expect(engine.drainTypeahead(2500)).toEqual(['accepted', 'accepted', 'accepted']);
-    expect(engine.snapshotState().typedRomaji).toBe('nar');
+    // クールダウン明け(2500)からは先頭から打ち直し。'na' は繰り越されない。
+    expect(engine.pressKey('n', 2500)).toBe('accepted');
+    expect(engine.pressKey('a', 2550)).toBe('accepted');
+    expect(engine.snapshotState().typedRomaji).toBe('na'); // abyss = narakuno...
   });
 
-  it('先行入力で始めた詠唱の castTimeMs はクールダウン明けから測られ、打鍵時刻に遡らない', () => {
-    // HPを高くして abyss の発動が終了を起こさないようにする
+  it('クールダウン中の打鍵は誤入力にも数えない', () => {
+    const engine = setupCooldownWithReady();
+    expect(engine.pressKey('x', 1200)).toBe('blocked'); // 誤ったキーでも受理前に blocked
+    expect(engine.snapshotState().castMistypes).toBe(0);
+    expect(engine.stats().totalMistypes).toBe(0);
+  });
+
+  it('クールダウン明けからは通常通り受理され、castTimeMs は明け後の最初の打鍵から測られる', () => {
+    // HP を高くして abyss の発動が終了を起こさないようにする
     const engine = makeEngine(1000);
     engine.start(0);
     engine.selectCard(1, 0); // gale
-    castFull(engine, 'gale', 1000); // 発動 → 1000+1500=2500 までクールダウン
-    engine.selectCard(0, 1200); // abyss を構える(クールダウン中)。手札に abyss は残っている
+    castFull(engine, 'gale', 1000); // 発動 → 2500 までクールダウン
+    engine.selectCard(0, 1200); // abyss を構える(クールダウン中)
 
-    // クールダウン中(1200〜)に abyss の先頭2打鍵 'na' を先行入力する。
-    // (先頭だけで受理時刻の検証には十分)
-    expect(engine.pressKey('n', 1200)).toBe('buffered');
-    expect(engine.pressKey('a', 1300)).toBe('buffered');
+    // クールダウン中(1200)の打鍵は破棄。明け後(2500)の最初の打鍵で castStartedAtMs が確定する。
+    expect(engine.pressKey('n', 1200)).toBe('blocked');
+    expect(engine.snapshotState().typedRomaji).toBe('');
 
-    // クールダウン明け(2500)にドレイン。受理時刻=2500 で castStartedAtMs が確定する。
-    expect(engine.drainTypeahead(2500)).toEqual(['accepted', 'accepted']);
-    expect(engine.snapshotState().typedRomaji).toBe('na'); // abyss = narakuno...
-
-    // 残りを時刻3000で打ち切る。詠唱時間 = 3000 - 2500 = 500。
-    // もし受理時刻が元の打鍵(1200)に遡っていたら 3000 - 1200 = 1800 になってしまう。
-    const rest = ROMAJI.abyss.slice(2);
+    // 2500 から abyss を打ち切る(最後の打鍵だけ 3000)。詠唱時間 = 3000 - 2500 = 500。
+    const keys = ROMAJI.abyss;
     let last = '';
-    for (const k of rest) {
-      last = engine.pressKey(k, 3000);
+    for (let i = 0; i < keys.length; i++) {
+      const t = i === keys.length - 1 ? 3000 : 2500;
+      last = engine.pressKey(keys[i], t);
     }
     expect(last).toBe('activated');
 
     const abyss = engine.events
       .filter((e) => e.type === 'activated')
-      .find((e) => e.type === 'activated' && e.cardId === 'abyss' && e.atMs === 3000);
+      .find((e) => e.type === 'activated' && e.cardId === 'abyss');
     expect(abyss).toBeDefined();
     if (abyss?.type === 'activated') {
       expect(abyss.castTimeMs).toBe(500); // クールダウン明け(2500)から発動(3000)まで
     }
-  });
-
-  it('現実的な長さの先行入力(上限64以内)は無音破棄されず全て受理される', () => {
-    const engine = setupCooldownWithReady();
-    // abyss = narakuno... の読み全文(ローマ字)を先行入力しても上限64に収まる
-    const full = ROMAJI.abyss; // 48文字 < 64
-    for (const k of full) {
-      expect(engine.pressKey(k, 1200)).toBe('buffered');
-    }
-    // 明けにドレインすると全文が順序通り受理され、最後の打鍵で発動する。
-    // (発動でセッションが消えるため typedRomaji は空になる)
-    const drained = engine.drainTypeahead(2500);
-    expect(drained.length).toBe(full.length);
-    expect(drained[drained.length - 1]).toBe('activated');
-    const activated = engine.events.find((e) => e.type === 'activated' && e.cardId === 'abyss');
-    expect(activated).toBeDefined();
-  });
-
-  it('クールダウン明け直後の生打鍵は保留中の先行入力を先に流すので打鍵順が逆転しない', () => {
-    // 修正1の回帰テスト。pressKey 先頭の drainTypeahead が無いと、
-    // クールダウン明け〜次 tick の窓でバッファ済み打鍵より後の生打鍵が先に適用され、
-    // 打鍵順が逆転して偽の mistyped が計上される(以前は mistypeCount===1 になっていた)。
-    const engine = setupCooldownWithReady(); // abyss = narakuno... を構えてクールダウン中
-
-    // クールダウン中(〜2500)に先頭2打鍵 'na' を先行入力(buffered)。drainTypeahead は呼ばない。
-    expect(engine.pressKey('n', 1200)).toBe('buffered');
-    expect(engine.pressKey('a', 1300)).toBe('buffered');
-    expect(engine.snapshotState().typedRomaji).toBe(''); // まだ進まない
-
-    // クールダウン明け(2500)に次の正しい打鍵 'r' を生入力する。
-    // pressKey 先頭で 'na' が順序通り流れた後に 'r' が受理され、'nar' になる。
-    expect(engine.pressKey('r', 2500)).toBe('accepted');
-
-    const snap = engine.snapshotState();
-    expect(snap.typedRomaji).toBe('nar'); // 意図順のプレフィックス
-    expect(snap.castMistypes).toBe(0); // 順序逆転による偽 mistyped が起きない(修正前は 1)
-  });
-
-  it('別カードへ構え直すと typeahead がクリアされる', () => {
-    const engine = setupCooldownWithReady();
-    engine.pressKey('n', 1200);
-    engine.pressKey('a', 1250);
-    // 別カード(index1: meteor)へ構え直す → バッファは進捗ごとリセット
-    engine.selectCard(1, 1300);
-
-    // ドレインしても受理する先行入力は残っていない(空配列)
-    expect(engine.drainTypeahead(2500)).toEqual([]);
-    expect(engine.snapshotState().typedRomaji).toBe('');
   });
 });
 

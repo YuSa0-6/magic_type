@@ -6,6 +6,7 @@ import {
   markReady,
   canStart,
   tryStart,
+  resetForRematch,
   buildMatchConfig,
   roleOf,
   type RoomState,
@@ -235,5 +236,40 @@ describe('ルームのライフサイクル', () => {
     expect(config.options?.timeLimitMs).toBe(30000);
     expect(config.players[0].id).toBe('a');
     expect(config.players[1].id).toBe('b');
+  });
+
+  it('resetForRematch は開始済みルームを full・両 ready へ巻き戻し、デッキ維持で再 tryStart 可(再戦, ADR 0011 #17)', () => {
+    let room = createRoom('ABC123');
+    room = joinOrThrow(room, 'p1');
+    room = joinOrThrow(room, 'p2');
+    const s1 = submitDeck(room, 'p1', legalDeckIds());
+    if (s1.ok) room = s1.value;
+    const s2 = submitDeck(room, 'p2', legalDeckIds());
+    if (s2.ok) room = s2.value;
+    const r1 = markReady(room, 'p1');
+    if (r1.ok) room = r1.value;
+    const r2 = markReady(room, 'p2');
+    if (r2.ok) room = r2.value;
+    const start = tryStart(room, { masterSeed: 1 });
+    if (start.ok) room = start.value.state;
+    expect(room.phase).toBe('started');
+    const deckBefore0 = room.slots[0]?.deck;
+    const deckBefore1 = room.slots[1]?.deck;
+
+    const reset = resetForRematch(room);
+    // phase が full へ戻り、両席 ready、デッキは直前のマッチのものを引き継ぐ(同一参照)。
+    expect(reset.phase).toBe('full');
+    expect(reset.slots[0]?.ready).toBe(true);
+    expect(reset.slots[1]?.ready).toBe(true);
+    expect(reset.slots[0]?.deck).toBe(deckBefore0);
+    expect(reset.slots[1]?.deck).toBe(deckBefore1);
+    // 巻き戻した state は canStart が真で、そのまま tryStart が成功する(合意即開始の契約)。
+    expect(canStart(reset)).toBe(true);
+    const restart = tryStart(reset, { masterSeed: 2 });
+    expect(restart.ok).toBe(true);
+    if (restart.ok) {
+      expect(restart.value.state.phase).toBe('started');
+      expect(restart.value.playerIds).toEqual(['p1', 'p2']);
+    }
   });
 });

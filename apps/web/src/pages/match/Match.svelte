@@ -88,25 +88,19 @@
   }
 
   // 時間 tick(約 100ms, ADR 0008)。rAF は使わない。
-  // 役割: ①自陣の先行入力ドレイン(ADR 0007)②ボットの手を進める ③時間切れ判定 ④表示更新。
+  // 役割: ①ボットの手を進める ②時間切れ判定 ③表示更新。
   $effect(() => {
     if (phase !== 'battle') {
       return;
     }
     const id = setInterval(() => {
       const now = performance.now();
-      // 自陣のクールダウン明け先行入力をドレイン(自陣の時間 tick 契機, ADR 0007/0008)。
-      // 受理した各打鍵に音を付ける(ADR 0012)。自陣のみ。
-      const selfDrained = engine.drainTypeahead(SELF_ID, now);
-      for (const r of selfDrained) {
-        sound.playForResult(r);
-      }
-      // ボットの手を進める(相手陣の駆動。内部で相手側の drainTypeahead も行う)。
+      // ボットの手を進める(相手陣の駆動)。
       // 相手の操作・発動は無音(ADR 0012: 音は自分の操作起点のみ)。bot.step は音を鳴らさない。
       const botChanged = bot.step(now);
       // 時間切れの権威判定(本来はサーバーの alarm, ADR 0011 #10。v1 はローカルで代行)。
       const timedUp = engine.evaluateTimeUp(now);
-      if (selfDrained.length > 0 || botChanged || timedUp) {
+      if (botChanged || timedUp) {
         refresh(now);
       } else {
         timers = engine.snapshotTimers(SELF_ID, now);
@@ -203,15 +197,9 @@
     }
     if (e.key === '-' || (e.key.length === 1 && e.key >= 'a' && e.key <= 'z')) {
       e.preventDefault();
-      // ADR 0012: 先に明示ドレインで保留中の先行入力を流して音を鳴らし、その後に当該キーを適用する
-      // (pressKey 内部のドレインで音が失われるのを防ぐ。順序は pressKey 内部と同一)。自陣のみ。
-      const drained = engine.drainTypeahead(SELF_ID, now);
-      for (const r of drained) {
-        sound.playForResult(r);
-      }
       const result = engine.pressKey(SELF_ID, e.key, now);
       sound.playForResult(result);
-      if (result === 'accepted' || result === 'activated' || result === 'buffered') {
+      if (result === 'accepted' || result === 'activated') {
         imeWarning = false;
       }
       refresh(now);

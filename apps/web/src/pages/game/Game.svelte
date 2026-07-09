@@ -71,25 +71,13 @@
 
   // 時間 tick。経過時間・クールダウン残りの表示更新に使う(rAF は撤廃)。
   // 表示解像度(0.1秒・HP10段階)に対し 100ms で十分。
-  // 併せて先行入力バッファのドレイン契機も兼ねる(ADR 0007/0008)。
   $effect(() => {
     if (phase !== 'battle') {
       return;
     }
     const id = setInterval(() => {
       const now = performance.now();
-      // クールダウン明けの先行入力をまとめて受理する。入力軸が変われば取り直す。
-      // 遷移ロジック(finished 判定・finalStats 確定・phase 切替)は refreshState に一本化する。
-      // 受理した各打鍵に音を付ける(ADR 0012: クールダウン明けに実際に受理されたぶんだけ鳴る)。
-      const drained = engine.drainTypeahead(now);
-      for (const r of drained) {
-        sound.playForResult(r);
-      }
-      if (drained.length > 0) {
-        refreshState(now);
-      } else {
-        timers = engine.snapshotTimers(now);
-      }
+      timers = engine.snapshotTimers(now);
     }, 100);
     return () => clearInterval(id);
   });
@@ -184,17 +172,10 @@
     // 英小文字と '-' のみを打鍵としてエンジンへ渡す。
     if (e.key === '-' || (e.key.length === 1 && e.key >= 'a' && e.key <= 'z')) {
       e.preventDefault();
-      // ADR 0012: 先に明示ドレインで保留中の先行入力を流して音を鳴らし(pressKey 内部の
-      // ドレインで音が失われるのを防ぐ)、その後に当該キーを適用する。順序は pressKey 内部と同一。
-      const drained = engine.drainTypeahead(now);
-      for (const r of drained) {
-        sound.playForResult(r);
-      }
       const result = engine.pressKey(e.key, now);
       sound.playForResult(result);
-      // 半角英小文字が正常に受理(発動・先行入力バッファ含む)されたら IME 警告を解除する。
-      // クールダウン中の正しい先行入力('buffered')でも IME がオフなのは明らかなので解除する。
-      if (result === 'accepted' || result === 'activated' || result === 'buffered') {
+      // 半角英小文字が正常に受理されたら IME 警告を解除する。
+      if (result === 'accepted' || result === 'activated') {
         imeWarning = false;
       }
       refreshState(now);

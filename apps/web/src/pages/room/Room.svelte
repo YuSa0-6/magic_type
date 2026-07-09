@@ -34,6 +34,8 @@
   let imeWarning = $state(false);
   // ロビー操作中フラグ(二重押し抑止)。
   let busy = $state(false);
+  // 再戦カウントダウン(#17)。決着中だけ 10→0 へ表示上カウントする(強制遷移はしない)。
+  let rematchCountdown = $state(10);
 
   // 効果音のミュート状態(ADR 0002: 状態は親が sound モジュール経由で保持し props で渡す)。
   let muted = $state(sound.isMuted());
@@ -118,7 +120,7 @@
     return Date.now();
   }
 
-  // 時間 tick(約 100ms, ADR 0008)。自陣予測のクールダウン明け先行入力ドレイン + 表示更新。
+  // 時間 tick(約 100ms, ADR 0008)。自陣予測の表示更新のみ。
   // 権威状態(HP 等)は transport.authState が WS push で随時更新されるためここでは触らない。
   $effect(() => {
     if (transport.phase !== 'matched' || predictor === null) {
@@ -126,12 +128,6 @@
     }
     const id = setInterval(() => {
       if (predictor === null) return;
-      // 自陣予測のクールダウン明け先行入力をドレイン。受理した各打鍵に音を付ける(ADR 0012)。
-      // これはローカル入力イベント由来で、サーバー権威 push(reconcile)とは無関係。
-      const drained = predictor.drain(now());
-      for (const r of drained) {
-        sound.playForResult(r);
-      }
       prediction = predictor.snapshot();
     }, 100);
     return () => clearInterval(id);
@@ -140,6 +136,20 @@
   // 画面離脱時に WS を閉じる。
   $effect(() => {
     return () => transport.leave();
+  });
+
+  // 再戦カウントダウン(#17)。transport.phase === 'ended' の間だけ 1 秒ごとに減らし 0 でクランプ。
+  // これは表示上の心理的な目安に過ぎず、0 になっても強制キャンセル・ホームへの自動遷移はしない。
+  $effect(() => {
+    if (transport.phase !== 'ended') {
+      rematchCountdown = 10;
+      return;
+    }
+    rematchCountdown = 10;
+    const id = setInterval(() => {
+      rematchCountdown = Math.max(0, rematchCountdown - 1);
+    }, 1000);
+    return () => clearInterval(id);
   });
 
   // 表示用スナップショット: 自陣の打鍵フィードバックは予測、HP/効果/相手/勝敗は権威。
@@ -220,6 +230,11 @@
     return '対戦開始の準備中…';
   });
 
+  // 再戦に同意する(#17)。両者が同意すると新しい matchStart が届き、predictor が作り直される。
+  function handleRematch(): void {
+    transport.requestRematch();
+  }
+
   // カードクリック(自陣のみ)。予測へ反映し、サーバーへも送る。
   function handleSelectCard(handIndex: number): void {
     if (predictor === null) return;
@@ -236,6 +251,16 @@
 
   // window keydown を一元処理する(対戦中の自陣入力のみ)。Match.svelte と同じ規約。
   function handleKeydown(e: KeyboardEvent): void {
+    if (transport.phase === 'ended') {
+      if (e.isComposing || e.keyCode === 229 || e.ctrlKey || e.metaKey || e.altKey || e.repeat) {
+        return;
+      }
+      if (e.key === ' ') {
+        e.preventDefault();
+        handleRematch();
+      }
+      return;
+    }
     if (transport.phase !== 'matched' || predictor === null) {
       return;
     }
@@ -262,12 +287,6 @@
     }
     if (e.key === '-' || (e.key.length === 1 && e.key >= 'a' && e.key <= 'z')) {
       e.preventDefault();
-      // ADR 0012: 先に明示ドレインで保留中の先行入力を流して音を鳴らし、その後に当該キーを適用する
-      // (予測 MatchEngine 内部のドレインで音が失われるのを防ぐ。順序は内部と同一)。自陣のみ。
-      const drained = predictor.drain(t);
-      for (const r of drained) {
-        sound.playForResult(r);
-      }
       const result = predictor.press(e.key, t);
       sound.playForResult(result);
       transport.enqueuePress(e.key, t);
@@ -351,6 +370,12 @@
     snapshot={displaySnapshot}
     opponentLabel="相手"
     promptText="対戦が終了しました"
+    rematch={{
+      countdownSeconds: rematchCountdown,
+      selfRequested: transport.rematchSelfRequested,
+      opponentRequested: transport.rematchOpponentRequested,
+      onRematch: handleRematch,
+    }}
   />
 {:else if displaySnapshot && transport.authState}
   <!-- 対戦中(matched / ended で displaySnapshot がまだ結果未確定の遷移含む) -->

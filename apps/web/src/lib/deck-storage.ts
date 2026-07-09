@@ -6,11 +6,11 @@
  * オフライン(対ボット)なのでサーバーは無く、ここで同じ規則をクライアント検証する。
  *
  * 保存形式はカード ID の配列(`string[]`)。Card オブジェクトそのものは保存せず、
- * 読み込み時に CARDS / EFFECT_CARDS から引き直す(カード定義の変更に追従するため)。
+ * 読み込み時に CARDS / EFFECT_CARDS / QUICK_CARDS から引き直す(カード定義の変更に追従するため)。
  * これは非コンポーネントのドメイン隣接ロジックなので lib に置く(ADR 0006)。
  */
 
-import { CARDS, EFFECT_CARDS, STARTER_DECK, type Card } from '@magic/server/engine';
+import { CARDS, EFFECT_CARDS, QUICK_CARDS, STARTER_DECK, type Card } from '@magic/server/engine';
 
 /** デッキの規定枚数(ADR 0010/0011, CONTEXT.md「デッキ」)。 */
 export const DECK_SIZE = 15;
@@ -20,8 +20,11 @@ export const MAX_PER_CARD = 2;
 /** localStorage のキー。エフェメラル ID 前提なので 1 デッキのみ保持する(ADR 0011 #7)。 */
 const STORAGE_KEY = 'magic:pvp:deck';
 
-/** カードプール(純攻撃 10 + 効果 6)。ID から Card を引く逆引きにも使う。 */
-export const CARD_POOL: readonly Card[] = [...CARDS, ...EFFECT_CARDS];
+/**
+ * カードプール(純攻撃 10 + 効果 6 + クイック 5)。ID から Card を引く逆引きにも使う。
+ * サーバー側 `match/deck` のプールと同じ全集合に揃える(ADR 0011 #1/#7・乖離防止)。
+ */
+export const CARD_POOL: readonly Card[] = [...CARDS, ...EFFECT_CARDS, ...QUICK_CARDS];
 
 const POOL_BY_ID: ReadonlyMap<string, Card> = new Map(CARD_POOL.map((c) => [c.id, c]));
 

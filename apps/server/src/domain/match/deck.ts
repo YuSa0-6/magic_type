@@ -6,19 +6,20 @@
  * web の `deck-storage`(クライアント検証)とは独立にサーバー側でも同じ規則を持つ。
  * これによりクライアントの自己申告(不正デッキ)を弾ける。
  *
- * カードプールは engine の `CARDS`(純攻撃 10)+ `EFFECT_CARDS`(効果 6)を正とする。
+ * カードプールは engine の `CARDS`(純攻撃 10)+ `EFFECT_CARDS`(効果 6)+ `QUICK_CARDS`(クイック 5)
+ * を正とする。web の `deck-storage` プールと同じ全集合に揃える(クライアント/サーバーの乖離防止)。
  * Hono / Cloudflare Workers のランタイム API には依存しない純 TS(ADR 0004)。
  */
 
-import { CARDS, EFFECT_CARDS, type Card } from '../engine/index.ts';
+import { CARDS, EFFECT_CARDS, QUICK_CARDS, type Card } from '../engine/index.ts';
 
 /** デッキの規定枚数(ADR 0010/0011)。 */
 export const DECK_SIZE = 15;
 /** 同種カードの上限枚数(ADR 0010/0011)。 */
 export const MAX_PER_CARD = 2;
 
-/** カードプール(純攻撃 10 + 効果 6)。サーバーが認める実在カードの全集合。 */
-export const CARD_POOL: readonly Card[] = [...CARDS, ...EFFECT_CARDS];
+/** カードプール(純攻撃 10 + 効果 6 + クイック 5)。サーバーが認める実在カードの全集合。 */
+export const CARD_POOL: readonly Card[] = [...CARDS, ...EFFECT_CARDS, ...QUICK_CARDS];
 
 const POOL_BY_ID: ReadonlyMap<string, Card> = new Map(CARD_POOL.map((c) => [c.id, c]));
 

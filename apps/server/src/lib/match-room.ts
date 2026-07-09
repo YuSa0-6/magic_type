@@ -45,6 +45,11 @@
  *  matchResumed(seed/self/opponent)+ 現況 state で表示を回復させる。相手へは
  *  opponentConnection(paused) で切断/再開を通知する。
  *
+ * ── 再戦(ADR 0011 #17)────────────────────────────────────────────────────────
+ *  決着後、在席クライアントは rematchRequest で再戦に同意できる。role ごとの投票が両者
+ *  揃った瞬間にのみ resetForRematch でルームを巻き戻し、新 masterSeed で beginMatch へ合流
+ *  して engine/session を作り直す(タイムアウト無し。片方だけの同意は無期限に相手を待つ)。
+ *
  * ── DO Storage 永続化 + Alarms 堅牢化(ADR 0012)────────────────────────────────
  *  B1〜B3 は「単一 DO がメモリ常駐で権威状態を保持する」前提だったが、DO は退避・再起動・
  *  クラッシュで揮発する。これを A3(MatchEngine.serialize/restore)と provisioned 済み SQLite
@@ -74,6 +79,7 @@ import {
   markReady,
   MatchSession,
   parseClientMessage,
+  resetForRematch,
   roleOf,
   submitDeck,
   tryStart,
@@ -179,6 +185,11 @@ export class MatchRoom implements DurableObject {
   private tickHandle: ReturnType<typeof setInterval> | null = null;
   /** matchEnd を二重送信しないためのガード。 */
   private ended = false;
+  /**
+   * 各 role の再戦同意投票(ADR 0011 #17)。決着後に role ごとに立ち、両者揃った瞬間にのみ
+   * resetForRematch → tryStart で同じ相手との次マッチを開始する。beginMatch でリセットされる。
+   */
+  private rematchVotes: [boolean, boolean] = [false, false];
   /**
    * 各 role の切断猶予 deadline(壁時計 ms, ADR 0011 #8 / 0012)。席が切断されたとき
    * `Date.now() + RECONNECT_GRACE_MS` を立て、ctx.storage の alarm がこの時刻で forfeit を
@@ -286,6 +297,9 @@ export class MatchRoom implements DurableObject {
         break;
       case 'input':
         this.handleInput(conn, msg.commands);
+        break;
+      case 'rematchRequest':
+        this.handleRematchRequest(conn);
         break;
     }
   }
@@ -433,21 +447,33 @@ export class MatchRoom implements DurableObject {
   private maybeStart(): void {
     // masterSeed の生成は domain の外(乱数源, ADR 0011 #7/#13)。crypto で 32bit を作る。
     const masterSeed = this.generateMasterSeed();
-    this.masterSeed = masterSeed; // 再接続時の matchResumed 再配布のため保持。
     const result = tryStart(this.room, { masterSeed });
     if (!result.ok) {
       // not_ready: まだ片方だけ。何もせず相手の ready を待つ。
       return;
     }
     this.room = result.value.state;
-    const { config, playerIds } = result.value;
+    this.beginMatch(result.value.config, result.value.playerIds, masterSeed);
+  }
 
-    // 権威エンジン + コーディネータを DO 内に生成して保持する(B2 の打鍵権威ループ)。
-    const matchConfig: MatchConfig = { players: config.players, options: config.options };
-    this.config = matchConfig; // restore / 再 serialize / checkpoint のため保持(ADR 0012)。
+  /**
+   * マッチ開始の共通経路(初回開始 / 再戦で共有, ADR 0011 #7/#17)。engine/session を作り直し、
+   * matchStart を配信し、権威 tick を開始し、checkpoint / alarm を張る。再戦(#17)もこの経路へ
+   * 合流するため、engine・session は毎回新規生成する(決定論 #4・rng 独立 #13・ラグ補償 #14 は
+   * 無改修で成立する)。masterSeed は呼び出し側が生成して渡す(config.options は optional なため)。
+   */
+  private beginMatch(
+    config: MatchConfig,
+    playerIds: readonly [string, string],
+    masterSeed: number
+  ): void {
+    this.config = config; // restore / 再 serialize / checkpoint のため保持(ADR 0012)。
+    this.masterSeed = masterSeed; // 再接続時の matchResumed 再配布のため保持。
     this.engine = new MatchEngine(config.players, config.options);
-    this.session = new MatchSession(this.engine, matchConfig);
+    this.session = new MatchSession(this.engine, config);
     this.playerIds = playerIds;
+    this.ended = false;
+    this.rematchVotes = [false, false];
 
     // 両者へ matchStart(seed + self/opponent の id)を配る(ADR 0011 #7)。
     for (const conn of this.connections.values()) {
@@ -460,14 +486,43 @@ export class MatchRoom implements DurableObject {
     }
 
     // 権威時計を開始し、約 10Hz の権威 tick(drain → 時間切れ判定 → デルタ push)を回す。
-    // 終了判定の権威 = サーバー。B1 が非ハイバネーション常駐のため setInterval で足りる
-    // (終了専用 alarm でも可だが、表示 tick と相乗りできる, ADR 0008/0011 #10)。
     this.session.start(Date.now());
     this.startTickLoop();
 
-    // matchStart 時に試合状態を checkpoint し、時間切れ alarm を予約する(ADR 0012)。
+    // 試合状態を checkpoint し、時間切れ alarm を予約する(ADR 0012)。
     void this.persist();
     void this.rescheduleAlarm();
+  }
+
+  /**
+   * 再戦への同意(決着後のみ有効, ADR 0011 #17)。role ごとの投票を立て、相手へ通知するだけで
+   * 待つ(タイムアウト無し)。両者揃った瞬間にのみ startRematch へ進む。
+   */
+  private handleRematchRequest(conn: Connection): void {
+    if (!this.ended || conn.role === null) {
+      return;
+    }
+    this.rematchVotes[conn.role] = true;
+    this.broadcastExcept(conn.ephemeralId, { type: 'opponentRematchRequested' });
+    if (this.rematchVotes[0] && this.rematchVotes[1]) {
+      this.startRematch();
+    }
+  }
+
+  /**
+   * 両者同意が揃った直後に呼ぶ(ADR 0011 #17)。ルームを巻き戻し、新しい masterSeed で通常開始
+   * 経路(beginMatch)へ合流する。resetForRematch は canStart を保証する契約なので tryStart は
+   * 通常成功する(失敗時は防御的 no-op)。
+   */
+  private startRematch(): void {
+    const masterSeed = this.generateMasterSeed();
+    this.room = resetForRematch(this.room);
+    const result = tryStart(this.room, { masterSeed });
+    if (!result.ok) {
+      return; // resetForRematch は canStart を保証する契約なので通常到達しない防御的 no-op。
+    }
+    this.room = result.value.state;
+    this.beginMatch(result.value.config, result.value.playerIds, masterSeed);
   }
 
   /**

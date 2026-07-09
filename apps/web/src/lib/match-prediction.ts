@@ -102,15 +102,6 @@ export class SelfPredictor {
     return this.engine.pressKey(this.selfId, key, atMs);
   }
 
-  /**
-   * クールダウン明け先行入力のドレイン(時間 tick 契機, ADR 0007)。
-   * 受理した各打鍵の結果列を返す(ADR 0012: クールダウン明けに実際に受理されたぶんだけ
-   * 音を鳴らすのに使う。何もドレインしなければ空配列)。
-   */
-  drain(atMs: number): PressResult[] {
-    return this.engine.drainTypeahead(this.selfId, atMs);
-  }
-
   /** 現在の自陣打鍵フィードバックを返す(視覚のみ。HP/効果/CD は読まない)。 */
   snapshot(): SelfTypingPrediction {
     const self: PlayerState = this.engine.snapshot(this.selfId).self;

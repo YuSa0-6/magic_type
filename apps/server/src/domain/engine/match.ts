@@ -166,7 +166,7 @@ interface StatefulRng {
 /**
  * コマンド(受理した入力の完全記録, ADR 0009 #3 / 0011 #4)。判別共用体。
  *
- * MatchEngine が受け取る状態変更入力(start / selectCard / pressKey / drainTypeahead)を
+ * MatchEngine が受け取る状態変更入力(start / selectCard / pressKey)を
  * 時系列で 1:1 記録する。eventLog(発動・撃破などの絶対イベント=統計用)とは責務を分離し、
  * 「同一 config + この commands 列 → 同一状態」(決定論)で任意 tick を再構成する土台にする。
  * 内部 Candidate 形状や HP などの派生状態は持たず、純粋な入力だけを保持する。
@@ -184,8 +184,7 @@ export type Command =
       readonly playerId: string;
       readonly key: string;
       readonly atMs: number;
-    }
-  | { readonly type: 'drain'; readonly playerId: string; readonly atMs: number };
+    };
 
 /**
  * mulberry32: 決定論的な疑似乱数生成器([0, 1) を返す)。内部状態を取り出し・復元できる
@@ -280,6 +279,7 @@ export class MatchEngine {
    * 発動でダメージを適用するたびに最新の atMs を立て、(a) 別 atMs の操作が来たとき、
    * (b) スナップショット/結果を読むとき、(c) 明示 flush 時に評価する。これにより
    * 同一 atMs で両陣営の発動が双方を 0 にした相打ちが draw として裁定される(#16)。
+   * pressKey の発動は KO 評価を保留点に積むだけで確定しない。
    */
   private pendingKoAtMs: number | null = null;
 
@@ -289,7 +289,7 @@ export class MatchEngine {
    * 受理した入力を時系列で記録するコマンドログ(ADR 0009 #3 / 0011 #4)。
    * eventLog(統計・絶対記録)とは責務を分離した「受理打鍵の完全記録」で、同一 config と
    * この列から fromCommands で状態を完全再構成できる(決定論, ADR 0009 #1)。
-   * selectCard/pressKey/drainTypeahead/start が append する。
+   * start/selectCard/pressKey が append する。
    */
   private readonly commandLog: Command[] = [];
 
@@ -381,29 +381,6 @@ export class MatchEngine {
   }
 
   /**
-   * 指定陣営のクールダウン明け先行入力をドレインする(ADR 0007)。
-   * 発動が起きたらダメージを適用し、KO 判定を同一 atMs の保留点に積む(即確定しない)。
-   * UI が時間 tick でドレイン契機を与える経路(ADR 0008)。
-   * 受理した各打鍵の結果を順序通りに返す(何もドレインしなければ空配列)。UI 側は
-   * この結果列でクールダウン明けに実際に受理されたぶんだけ音を鳴らし(ADR 0012)、
-   * 取り直しの要否は .length で判断する(空配列は truthy なので真偽では見ない)。
-   */
-  drainTypeahead(playerId: string, atMs: number): PressResult[] {
-    this.commandLog.push({ type: 'drain', playerId, atMs });
-    this.flushPendingKo(atMs);
-    if (this.isResolved) {
-      return [];
-    }
-    const idx = this.indexOf(playerId);
-    const { results, activation } = this.sides[idx].drainTypeahead(atMs);
-    if (activation !== null) {
-      this.applyActivation(idx, activation);
-      this.pendingKoAtMs = atMs;
-    }
-    return results;
-  }
-
-  /**
    * 発動ダメージを相手 HP へ適用し、続けてカード効果を固定順で適用する(ADR 0010 #14/#15)。
    * 順序: ①ダメージ(相手 HP)→ ②自陣バフ(heal/shield/haste/sift)→ ③相手デバフ
    * (slow/discard)。1 カードの effects 配列内も同順で適用する。これで effects[] の評価が
@@ -461,7 +438,7 @@ export class MatchEngine {
 
   /**
    * 保留中の KO 判定を「nextAtMs より前の権威時刻」のものに限り確定させる。
-   * pressKey/drainTypeahead は KO 評価を pendingKoAtMs に積むだけで確定しない。
+   * pressKey の発動は KO 評価を pendingKoAtMs に積むだけで確定しない。
    * 別 atMs の操作が来た時点で、それより前(= 同一 atMs バッチが閉じた)保留点を一括評価する。
    * nextAtMs を省略(参照系から呼ぶ)した場合は、保留があれば無条件に確定させる。
    */
@@ -666,9 +643,6 @@ export class MatchEngine {
           break;
         case 'press':
           engine.pressKey(cmd.playerId, cmd.key, cmd.atMs);
-          break;
-        case 'drain':
-          engine.drainTypeahead(cmd.playerId, cmd.atMs);
           break;
       }
     }
