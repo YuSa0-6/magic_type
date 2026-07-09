@@ -37,7 +37,7 @@
     justify-content: center;
     align-items: center;
     min-height: 100vh;
-    padding: 1rem;
+    padding: 0;
     box-sizing: border-box;
     font-family: sans-serif;
     color: #333;
