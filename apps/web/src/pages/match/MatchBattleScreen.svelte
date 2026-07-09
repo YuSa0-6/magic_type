@@ -18,6 +18,9 @@
   interface Props {
     snapshot: MatchSnapshot;
     timers: MatchTimers;
+    /** 現在時刻(呼び出し側の権威時計と同じ軸: vsボットは performance.now()、オンラインは
+     * サーバーと合わせた Date.now())。activeEffects の expiresAtMs 判定にのみ使う表示専用の値。 */
+    nowMs: number;
     imeWarning: boolean;
     onSelectCard: (handIndex: number) => void;
     /** 相手の表示名(オフラインは「相手(ボット)」、オンラインは「相手」)。 */
@@ -33,6 +36,7 @@
   const {
     snapshot,
     timers,
+    nowMs,
     imeWarning,
     onSelectCard,
     opponentLabel = '相手(ボット)',
@@ -59,6 +63,14 @@
   // 相手伏せ札の逆さ扇(180±数度)。呼び出し側で角度を決めて Card に渡す。
   const OPP_HAND_ROTATIONS = [176, 179, 181, 184];
 
+  // PlayerSide は期限切れの時限効果(haste/slow)を timedCdEffects から自発的に除去しない
+  // (エンジン側 cdDeltaAt が atMs と expiresAtMs を比較して都度フィルタする契約, player-side.ts)。
+  // よって activeEffects をそのまま表示・計算に使うと、効果の窓が過ぎた後もバッジやCDゲージに
+  // 永遠に影響し続ける。ここで nowMs との比較により失効分を落としてから使う。
+  function liveEffects(effects: readonly ActiveEffectView[]): readonly ActiveEffectView[] {
+    return effects.filter((eff) => nowMs <= eff.expiresAtMs);
+  }
+
   // CD ゲージは「回復の進捗」を 0→1 で表す。selfCooldownRemainingMs を実効 CD 時間で割って反転する。
   // 実効 CD 時間はエンジン内部にしか無い(MatchTimers/ActiveEffectView は公開しない)ため、
   // 現在アクティブな haste/slow から近似する(エンジンの cdDeltaAt と同じ考え方)。CD 開始後に
@@ -66,7 +78,7 @@
   // 必ず不正確(進捗が負になりゲージが消える等)だったのに対し、これは実態に近い次善策。
   function estimatedCooldownTotalMs(card: CardModel): number {
     let delta = 0;
-    for (const eff of self.activeEffects) {
+    for (const eff of liveEffects(self.activeEffects)) {
       delta += eff.kind === 'haste' ? -eff.ms : eff.ms;
     }
     return Math.max(1, card.cooldownMs + delta);
@@ -96,7 +108,7 @@
 </script>
 
 {#snippet statusBadges(effects: readonly ActiveEffectView[], shield: number)}
-  {#each effects as eff (eff.kind)}
+  {#each liveEffects(effects) as eff (eff.kind)}
     <StatusBadge variant={eff.kind} label={effectLabel(eff.kind)} />
   {/each}
   {#if shield > 0}
@@ -110,7 +122,7 @@
       <!-- 接続状況バナー(オンラインの切断/再接続表示用)。 -->
       {#if statusBanner}
         <div class="banner">
-          <StatusBadge variant="warning" label={statusBanner} />
+          <StatusBadge variant="warning" role="status" label={statusBanner} />
         </div>
       {/if}
 

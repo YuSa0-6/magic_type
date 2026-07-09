@@ -215,6 +215,7 @@
   <MatchBattleScreen
     {snapshot}
     {timers}
+    nowMs={performance.now()}
     {imeWarning}
     onSelectCard={handleSelectCard}
     {muted}
