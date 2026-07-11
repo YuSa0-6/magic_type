@@ -1,7 +1,12 @@
 {
   // Cloudflare Workers の設定。Hono(/api/*)+ Svelte SPA(静的配信)を 1 つの Worker で扱う。
   "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "magic",
+  // Cloudflare Dashboard 上で Worker 名を "magic" から "typespell" へリネーム済み
+  // (カスタムドメイン typespell.app に合わせた命名)。既存の Durable Object
+  // namespace(MatchRoom)はリネーム後の "typespell" 側に紐づいているため、
+  // ここも一致させないと CI の wrangler deploy が別スクリプトとして
+  // namespace 名衝突を起こす。
+  "name": "typespell",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-12",
   "routes": [
