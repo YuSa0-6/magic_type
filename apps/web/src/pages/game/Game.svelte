@@ -11,8 +11,8 @@
   import ResultScreen from './ResultScreen.svelte';
   import * as sound from '../../lib/sound.svelte';
 
-  // ゲーム内の画面遷移。'start'(準備) → 'battle' → 'result' と進む。
-  type Phase = 'start' | 'battle' | 'result';
+  // ゲーム内の画面遷移。'start'(準備) → 'countdown'(開始演出) → 'battle' → 'result' と進む。
+  type Phase = 'start' | 'countdown' | 'battle' | 'result';
 
   // エンジン本体は $state にしない(ADR 0002: スナップショットだけを状態として持つ)。
   // retry() で作り直すが、再描画は state/timers の更新で起こすため非リアクティブで意図的。
@@ -21,6 +21,9 @@
   let engine = new BattleEngine(STARTER_DECK);
 
   let phase = $state<Phase>('start');
+  // 開始カウントダウンの表示値(3→2→1→'go')。null は非カウントダウン(UI 状態のみ, ADR 0008:
+  // 秒送りは pages 層で管理しエンジンには触れない)。
+  let countdownValue = $state<number | 'go' | null>(null);
   // 表示の正を時間軸(timers)と入力軸(battleState)に分ける(ADR 0008)。
   // timers は時間 tick(setInterval)で、battleState は入力イベント後にのみ取り直す。
   // 毎回まるごと置換するため $state.raw で十分。
@@ -82,10 +85,21 @@
     return () => clearInterval(id);
   });
 
-  // 準備画面で新しいバトルを開始する。
-  function startBattle(): void {
-    // バトル開始のユーザージェスチャ(スペース)で音システムを起動(ADR 0012)。
+  // 開始カウントダウンを始める(スペース押下時)。ユーザージェスチャで音システムを起動する
+  // (ADR 0012)が、engine.start() はまだ呼ばない。エンジンはコンストラクタで初期状態が確定
+  // 済みなので、start を遅らせるだけで減彩盤面+演出を出せる(タイマーは 0 のまま)。
+  function beginCountdown(): void {
     sound.resume();
+    countdownValue = 3;
+    phase = 'countdown';
+  }
+
+  // カウントダウン完了。ここで初めてタイマーを開始する(旧 startBattle 相当)。
+  // interval からの多重呼び出しに備えて phase をガードする。
+  function finishCountdown(): void {
+    if (phase !== 'countdown') {
+      return;
+    }
     // 命中音の前値をベースラインし直す(refreshState 前に null で初回観測扱いにする, ADR 0012)。
     prevTargetHp = null;
     const now = performance.now();
@@ -94,22 +108,45 @@
     refreshState(now);
   }
 
-  // リザルトから再挑戦する。エンジンを新規に作り直し、すぐバトルを開始する。
+  // カウントダウンの秒送り(ADR 0008: rAF 不使用の setInterval)。phase==='countdown' の間だけ動く。
+  // 3(開始時に設定済み) →1秒→2 →1秒→1 →1秒→'go' →0.6秒→ 開始。各代入は同値なら no-op。
+  $effect(() => {
+    if (phase !== 'countdown') {
+      return;
+    }
+    const startedAt = performance.now();
+    const id = setInterval(() => {
+      const elapsed = performance.now() - startedAt;
+      if (elapsed >= 3600) {
+        finishCountdown();
+      } else if (elapsed >= 3000) {
+        countdownValue = 'go';
+      } else if (elapsed >= 2000) {
+        countdownValue = 1;
+      } else if (elapsed >= 1000) {
+        countdownValue = 2;
+      }
+    }, 100);
+    return () => clearInterval(id);
+  });
+
+  // リザルトから再挑戦する。エンジンを新規に作り直し、初期スナップショットで減彩盤面を
+  // 表示してから、開始時と同じカウントダウンへ入る(演出の一貫性のため)。
   function retry(): void {
-    sound.resume();
     engine = new BattleEngine(STARTER_DECK);
     finalStats = null;
     imeWarning = false;
-    // 命中音の前値をベースラインし直す(refreshState 前に null, ADR 0012)。
-    prevTargetHp = null;
-    const now = performance.now();
-    engine.start(now);
-    phase = 'battle';
-    refreshState(now);
+    battleState = engine.snapshotState();
+    timers = engine.snapshotTimers(performance.now());
+    beginCountdown();
   }
 
   // カードクリック(マウス操作)。クールダウン中でも選択(構え)は可能。
   function handleSelectCard(handIndex: number): void {
+    // カウントダウン中はマウスでの選択も無視する(オーバーレイでも遮るが二重の保険)。
+    if (phase === 'countdown') {
+      return;
+    }
     const now = performance.now();
     // 選択が実際に変わった時だけ選択音を鳴らす(同カード再選択・終了後は no-op, ADR 0012)。
     const before = battleState.selectedIndex;
@@ -122,6 +159,10 @@
 
   // window の keydown を一元処理する(ゲーム画面の表示中のみ捕捉される)。
   function handleKeydown(e: KeyboardEvent): void {
+    // カウントダウン中は一切の入力を無視する(誤ってエンジンへキーが渡らないよう IME 判定より前)。
+    if (phase === 'countdown') {
+      return;
+    }
     // IME(日本語入力)変換中の keydown は無視する。変換確定前のキーは
     // isComposing が立つか、keyCode 229(IME 処理中の合成キーコード)になる。
     // 単に弾くだけでは無音の取りこぼしになるため、警告フラグを立てて UX で気づかせる。
@@ -142,7 +183,7 @@
     if (phase === 'start') {
       if (e.key === ' ') {
         e.preventDefault();
-        startBattle();
+        beginCountdown();
       }
       return;
     }
@@ -188,7 +229,7 @@
 
 {#if phase === 'start'}
   <StartScreen />
-{:else if phase === 'battle'}
+{:else if phase === 'countdown' || phase === 'battle'}
   <BattleScreen
     state={battleState}
     {timers}
@@ -196,6 +237,7 @@
     onSelectCard={handleSelectCard}
     {muted}
     onToggleMute={handleToggleMute}
+    countdownValue={phase === 'countdown' ? countdownValue : null}
   />
 {:else if finalStats}
   <ResultScreen stats={finalStats} clearTimeMs={battleState.clearTimeMs ?? 0} />

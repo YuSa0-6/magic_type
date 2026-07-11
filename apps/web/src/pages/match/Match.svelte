@@ -15,7 +15,8 @@
   // オフライン対戦(対ボット)の親(ADR 0010/0011)。Game.svelte と同じ構成で、
   // BattleEngine を MatchEngine に、的の HP を「相手陣の HP」に置き換えたもの。
   // v1 はサーバー無しなので相手陣をローカルの簡易ボットで駆動する(後続 B で WS 配線)。
-  type Phase = 'start' | 'battle' | 'result';
+  // 'start'(準備) → 'countdown'(開始演出) → 'battle' → 'result' と進む。
+  type Phase = 'start' | 'countdown' | 'battle' | 'result';
 
   // 自陣 / ボットの陣営 ID。snapshot(SELF_ID) で self/opponent が決まる(ADR 0011 #3)。
   const SELF_ID = 'self';
@@ -29,6 +30,9 @@
   let bot = new MatchBot(engine, BOT_ID);
 
   let phase = $state<Phase>('start');
+  // 開始カウントダウンの表示値(3→2→1→'go')。null は非カウントダウン(UI 状態のみ, ADR 0008:
+  // 秒送りは pages 層で管理しエンジンには触れない)。
+  let countdownValue = $state<number | 'go' | null>(null);
   // 表示の正を入力軸(snapshot)と時間軸(timers)に分ける(ADR 0008)。
   // 毎回まるごと置換するため $state.raw で十分。
   let snapshot: MatchSnapshot = $state.raw(engine.snapshot(SELF_ID));
@@ -109,10 +113,21 @@
     return () => clearInterval(id);
   });
 
-  // 対戦開始。
-  function startMatch(): void {
-    // バトル開始のユーザージェスチャ(スペース)で音システムを起動(ADR 0012)。
+  // 開始カウントダウンを始める(スペース押下時)。ユーザージェスチャで音システムを起動する
+  // (ADR 0012)が、engine.start() はまだ呼ばない。エンジンはコンストラクタで初期状態が確定
+  // 済みなので、start を遅らせるだけで減彩盤面+演出を出せる(タイマーは動かない)。
+  function beginCountdown(): void {
     sound.resume();
+    countdownValue = 3;
+    phase = 'countdown';
+  }
+
+  // カウントダウン完了。ここで初めてタイマー(とボット駆動)を開始する(旧 startMatch 相当)。
+  // interval からの多重呼び出しに備えて phase をガードする。
+  function finishCountdown(): void {
+    if (phase !== 'countdown') {
+      return;
+    }
     // 盤面結果音の前値をベースラインし直す(refresh 前に null で初回観測扱い, ADR 0012)。
     prevSelfHp = null;
     prevSelfShield = null;
@@ -123,25 +138,46 @@
     refresh(now);
   }
 
-  // リザルトから再戦する。エンジン・ボットを作り直してすぐ開始する。
+  // カウントダウンの秒送り(ADR 0008: rAF 不使用の setInterval)。phase==='countdown' の間だけ動く。
+  // 3(開始時に設定済み) →1秒→2 →1秒→1 →1秒→'go' →0.6秒→ 開始。各代入は同値なら no-op。
+  $effect(() => {
+    if (phase !== 'countdown') {
+      return;
+    }
+    const startedAt = performance.now();
+    const id = setInterval(() => {
+      const elapsed = performance.now() - startedAt;
+      if (elapsed >= 3600) {
+        finishCountdown();
+      } else if (elapsed >= 3000) {
+        countdownValue = 'go';
+      } else if (elapsed >= 2000) {
+        countdownValue = 1;
+      } else if (elapsed >= 1000) {
+        countdownValue = 2;
+      }
+    }, 100);
+    return () => clearInterval(id);
+  });
+
+  // リザルトから再戦する。エンジン・ボットを作り直し、初期スナップショットで減彩盤面を
+  // 表示してから、開始時と同じカウントダウンへ入る(演出の一貫性のため)。
   function retry(): void {
-    sound.resume();
     engine = createEngine();
     bot = new MatchBot(engine, BOT_ID);
     finalOutcome = null;
     imeWarning = false;
-    // 盤面結果音の前値をベースラインし直す(refresh 前に null, ADR 0012)。
-    prevSelfHp = null;
-    prevSelfShield = null;
-    prevOppHp = null;
-    const now = performance.now();
-    engine.start(now);
-    phase = 'battle';
-    refresh(now);
+    snapshot = engine.snapshot(SELF_ID);
+    timers = engine.snapshotTimers(SELF_ID, performance.now());
+    beginCountdown();
   }
 
   // カードクリック(マウス操作)。自陣のみ操作可能。
   function handleSelectCard(handIndex: number): void {
+    // カウントダウン中はマウスでの選択も無視する(オーバーレイでも遮るが二重の保険)。
+    if (phase === 'countdown') {
+      return;
+    }
     const now = performance.now();
     // 選択が実際に変わった時だけ選択音を鳴らす(同カード再選択・決着後は no-op, ADR 0012)。
     const before = snapshot.self.selectedIndex;
@@ -154,6 +190,10 @@
 
   // window の keydown を一元処理する(対戦画面の表示中のみ捕捉される)。Game.svelte と同じ規約。
   function handleKeydown(e: KeyboardEvent): void {
+    // カウントダウン中は一切の入力を無視する(誤ってエンジンへキーが渡らないよう IME 判定より前)。
+    if (phase === 'countdown') {
+      return;
+    }
     // IME 変換中の keydown は弾き、警告フラグで気づかせる(Game.svelte と同じ)。
     if (e.isComposing || e.keyCode === 229) {
       imeWarning = true;
@@ -169,7 +209,7 @@
     if (phase === 'start') {
       if (e.key === ' ') {
         e.preventDefault();
-        startMatch();
+        beginCountdown();
       }
       return;
     }
@@ -211,7 +251,7 @@
 
 {#if phase === 'start'}
   <MatchStartScreen />
-{:else if phase === 'battle'}
+{:else if phase === 'countdown' || phase === 'battle'}
   <MatchBattleScreen
     {snapshot}
     {timers}
@@ -220,6 +260,7 @@
     onSelectCard={handleSelectCard}
     {muted}
     onToggleMute={handleToggleMute}
+    countdownValue={phase === 'countdown' ? countdownValue : null}
   />
 {:else if finalOutcome}
   <MatchResultScreen outcome={finalOutcome} {snapshot} />
