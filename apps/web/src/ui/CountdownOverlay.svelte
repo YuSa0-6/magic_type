@@ -9,7 +9,9 @@
   const { value }: Props = $props();
 </script>
 
-<!-- 盤面の上に重ね、カウントダウン中のクリックも吸収する(pointer-events は既定=auto)。
+<!-- 盤面の上に重ねる純粋な演出レイヤー。pointer-events:none でクリックを透過させる
+     (ミュートボタン等は素通しにする。カード選択操作自体は呼び出し側 pages が
+     phase==='countdown' の間ブロック済みなので、ここで吸収する必要はない)。
      装飾なので支援技術には読ませない(短時間で切り替わり読み上げが雑音になるため)。 -->
 <div class="overlay" aria-hidden="true">
   <!-- value が変わるたびに要素を貼り直してスケールイン keyframes を再生する
@@ -28,6 +30,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    pointer-events: none;
   }
 
   .ring {
