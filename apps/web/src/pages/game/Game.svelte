@@ -10,6 +10,7 @@
   import BattleScreen from './BattleScreen.svelte';
   import ResultScreen from './ResultScreen.svelte';
   import * as sound from '../../lib/sound.svelte';
+  import { Countdown } from '../../lib/countdown.svelte';
 
   // ゲーム内の画面遷移。'start'(準備) → 'countdown'(開始演出) → 'battle' → 'result' と進む。
   type Phase = 'start' | 'countdown' | 'battle' | 'result';
@@ -21,9 +22,10 @@
   let engine = new BattleEngine(STARTER_DECK);
 
   let phase = $state<Phase>('start');
-  // 開始カウントダウンの表示値(3→2→1→'go')。null は非カウントダウン(UI 状態のみ, ADR 0008:
-  // 秒送りは pages 層で管理しエンジンには触れない)。
-  let countdownValue = $state<number | 'go' | null>(null);
+  // 開始カウントダウン(3→2→1→'go')。lib/countdown.svelte.ts に秒送りロジックを集約し、
+  // vsボット(Match.svelte)と共有する(タイミングの重複によるズレを防ぐ)。
+  // svelte-ignore non_reactive_update
+  const countdown = new Countdown();
   // 表示の正を時間軸(timers)と入力軸(battleState)に分ける(ADR 0008)。
   // timers は時間 tick(setInterval)で、battleState は入力イベント後にのみ取り直す。
   // 毎回まるごと置換するため $state.raw で十分。
@@ -90,12 +92,12 @@
   // 済みなので、start を遅らせるだけで減彩盤面+演出を出せる(タイマーは 0 のまま)。
   function beginCountdown(): void {
     sound.resume();
-    countdownValue = 3;
     phase = 'countdown';
+    countdown.begin(finishCountdown);
   }
 
   // カウントダウン完了。ここで初めてタイマーを開始する(旧 startBattle 相当)。
-  // interval からの多重呼び出しに備えて phase をガードする。
+  // Countdown 内部で1回だけ呼ばれるが、phase をガードして多重呼び出しに備える。
   function finishCountdown(): void {
     if (phase !== 'countdown') {
       return;
@@ -108,26 +110,9 @@
     refreshState(now);
   }
 
-  // カウントダウンの秒送り(ADR 0008: rAF 不使用の setInterval)。phase==='countdown' の間だけ動く。
-  // 3(開始時に設定済み) →1秒→2 →1秒→1 →1秒→'go' →0.6秒→ 開始。各代入は同値なら no-op。
+  // 画面離脱時に進行中のカウントダウンを止める(setInterval の後始末)。
   $effect(() => {
-    if (phase !== 'countdown') {
-      return;
-    }
-    const startedAt = performance.now();
-    const id = setInterval(() => {
-      const elapsed = performance.now() - startedAt;
-      if (elapsed >= 3600) {
-        finishCountdown();
-      } else if (elapsed >= 3000) {
-        countdownValue = 'go';
-      } else if (elapsed >= 2000) {
-        countdownValue = 1;
-      } else if (elapsed >= 1000) {
-        countdownValue = 2;
-      }
-    }, 100);
-    return () => clearInterval(id);
+    return () => countdown.cancel();
   });
 
   // リザルトから再挑戦する。エンジンを新規に作り直し、初期スナップショットで減彩盤面を
@@ -237,7 +222,7 @@
     onSelectCard={handleSelectCard}
     {muted}
     onToggleMute={handleToggleMute}
-    countdownValue={phase === 'countdown' ? countdownValue : null}
+    countdownValue={phase === 'countdown' ? countdown.value : null}
   />
 {:else if finalStats}
   <ResultScreen stats={finalStats} clearTimeMs={battleState.clearTimeMs ?? 0} />
