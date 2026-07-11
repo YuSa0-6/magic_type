@@ -9,6 +9,7 @@
   import HpBar from '../../ui/HpBar.svelte';
   import Panel from '../../ui/Panel.svelte';
   import StatusBadge from '../../ui/StatusBadge.svelte';
+  import CountdownOverlay from '../../ui/CountdownOverlay.svelte';
   import { formatSeconds } from '../../lib/format';
   import { HAND_ROTATIONS } from '../../lib/card-format';
 
@@ -31,6 +32,9 @@
     muted: boolean;
     /** ミュート切替を親へ通知する(状態の書き込みは親で行う, ADR 0002)。 */
     onToggleMute: () => void;
+    /** カウントダウン中の表示値。null なら通常表示(盤面フル彩度・オーバーレイなし)。
+     * オンライン対戦(Room.svelte)は渡さないので既定 null=カウントダウンなしになる。 */
+    countdownValue?: number | 'go' | null;
   }
 
   const {
@@ -43,6 +47,7 @@
     statusBanner = null,
     muted,
     onToggleMute,
+    countdownValue = null,
   }: Props = $props();
 
   // ミュートトグルのクリック。トグル後はボタンを blur して以後の打鍵を妨げない(ADR 0012)。
@@ -118,7 +123,7 @@
 
 <div class="stage-viewport">
   <div class="stage">
-    <section class="battle">
+    <section class="battle" class:dimming={countdownValue != null}>
       <!-- 接続状況バナー(オンラインの切断/再接続表示用)。 -->
       {#if statusBanner}
         <div class="banner">
@@ -241,10 +246,24 @@
         </div>
       </footer>
     </section>
+
+    <!-- 減彩される .battle の外(兄弟)に置く。opacity は子孫も合成するため、オーバーレイ
+         自身が薄くならないよう .stage 直下の兄弟にする。 -->
+    {#if countdownValue != null}
+      <CountdownOverlay value={countdownValue} />
+    {/if}
   </div>
 </div>
 
 <style>
+  /* オーバーレイ(position:absolute; inset:0)の位置基準。
+     背景も敷くのは、減彩(.battle opacity .22)時に白い body が透けて盤面が白く沈むのを防ぐため
+     (デザイン 6c: 背景は暗いまま、内容だけ 22% に沈む)。通常時は不透明な .battle が覆う。 */
+  .stage {
+    position: relative;
+    background: var(--bg-radial-battle);
+  }
+
   .battle {
     position: relative;
     box-sizing: border-box;
@@ -257,6 +276,13 @@
     justify-content: space-between;
     background: var(--bg-radial-battle);
     font-family: var(--font-body);
+    /* 開始で色が戻る滑らかな遷移(README「開始で盤面の彩度が戻る」)。 */
+    transition: opacity 0.3s ease-out;
+  }
+
+  /* カウントダウン中は盤面を減彩表示(README: opacity .22)。 */
+  .battle.dimming {
+    opacity: 0.22;
   }
 
   /* 接続状況バナー: 盤面上部中央にオーバーレイ(3 段レイアウトを崩さない)。 */
